@@ -1,0 +1,12 @@
+.user-card { border: none; border-radius: 12px; transition: transform 0.3s ease; background: white; }
+.user-card:hover { transform: translateY(-4px); box-shadow: 0 8px 16px rgba(0, 0, 0, 0.12) !important; }
+.user-card-avatar { width: 100px; height: 100px; margin: 0 auto 1rem; border-radius: 50%; overflow: hidden; border: 3px solid #667eea; background: #e9ecef; }
+.user-card-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.avatar-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-size: 2rem; font-weight: bold; }
+.user-card-name { color: #2c3e50; font-weight: 700; font-size: 1.1rem; margin-bottom: 0.25rem; }
+.user-card-username { color: #7f8c8d; font-size: 0.9rem; margin-bottom: 0.75rem; }
+.user-card-stats { display: flex; justify-content: center; gap: 1.5rem; margin: 1rem 0; color: #7f8c8d; font-size: 0.9rem; }
+.stat-item { display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+.stat-item strong { color: #667eea; font-size: 1.1rem; }
+.user-card-actions { display: flex; flex-direction: column; gap: 0.5rem; }
+@media (max-width: 768px) { .user-card-avatar { width: 80px; height: 80px; border-width: 2px; } }
