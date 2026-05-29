@@ -13,6 +13,7 @@ import { Demo } from "./pages/Demo";
 import { Register } from "./pages/Register";
 import { Login } from "./pages/Login";
 import { Friends } from "./pages/Friends";
+import { FriendProfile } from "./pages/FriendProfile";
 
 export const router = createBrowserRouter(
 	createRoutesFromElements(
@@ -36,11 +37,12 @@ export const router = createBrowserRouter(
 			{/* Register */}
 			<Route path="/register" element={<Register />} />
 
-      <Route path="/login" element={<Login />} />
+			<Route path="/login" element={<Login />} />
 
-      {/* Friends */}
-      <Route path="/friends" element={<Friends />} />
+			{/* Friends */}
+			<Route path="/friends" element={<Friends />} />
 
+			<Route path="/friends/:userId" element={<FriendProfile />} />
 		</Route>
 	)
 );

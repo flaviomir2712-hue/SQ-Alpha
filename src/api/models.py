@@ -16,16 +16,36 @@ event_participants = Table(
 # ── USER ─────────────────────────────────────────────────
 class User(db.Model):
     __tablename__ = "user"
-
+ 
     id:        Mapped[int]  = mapped_column(primary_key=True)
     email:     Mapped[str]  = mapped_column(String(120), unique=True, nullable=False)
     password:  Mapped[str]  = mapped_column(nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean(), nullable=False)
-
+ 
+    # ── profile fields ──────────────────────────────
+    username:            Mapped[str] = mapped_column(String(50),  unique=True, nullable=True)
+    first_name:          Mapped[str] = mapped_column(String(50),  nullable=True)
+    last_name:           Mapped[str] = mapped_column(String(50),  nullable=True)
+    city:                Mapped[str] = mapped_column(String(100), nullable=True)
+    bio:                 Mapped[str] = mapped_column(Text,        nullable=True)
+    profile_picture_url: Mapped[str] = mapped_column(String(500), nullable=True)
+    birthdate:           Mapped[str] = mapped_column(String(20),  nullable=True)
+    phone:               Mapped[str] = mapped_column(String(30),  nullable=True)
+    created_at:          Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
+ 
     def serialize(self):
         return {
-            "id": self.id,
-            "email": self.email,
+            "id":                  self.id,
+            "email":               self.email,
+            "username":            self.username,
+            "first_name":          self.first_name,
+            "last_name":           self.last_name,
+            "city":                self.city,
+            "bio":                 self.bio,
+            "profile_picture_url": self.profile_picture_url,
+            "birthdate":           self.birthdate,
+            "phone":               self.phone,
+            "created_at":          self.created_at.isoformat() if self.created_at else None,
         }
 
 # ── EVENT ─────────────────────────────────────────────────

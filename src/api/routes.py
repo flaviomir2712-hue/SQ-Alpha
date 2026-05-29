@@ -3,7 +3,7 @@ from flask_cors import CORS
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
 from api.models import db, User, Event, Friendship
-
+from datetime import datetime, timedelta
 api = Blueprint('api', __name__)
 CORS(api)
 
@@ -384,3 +384,205 @@ def search_users():
         })
  
     return jsonify(results), 200
+
+# =========================================================
+# PROFILE
+# =========================================================
+ 
+# ---------- GET MY PROFILE ----------
+# Returns user fields + stats:
+#   events_created_count        — events where I am the creator
+#   events_participated_count   — events where I appear as participant
+#   activity_avg_per_week       — avg # of events I participated in over the last 4 weeks
+#   activity_level              — "Peu actif" | "Actif" | "Très actif"
+#   activity_percent            — 0..100, capped, for the UI bar
+@api.route('/profile/me', methods=['GET'])
+@jwt_required()
+def get_my_profile():
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+ 
+    # ----- count events created and participated -----
+    events_created_count = Event.query.filter(Event.creator_id == current_user_id).count()
+ 
+    all_events = Event.query.all()
+    participated = [e for e in all_events if current_user_id in [p.id for p in e.participants]]
+    events_participated_count = len(participated)
+ 
+    # ----- compute activity over the last 4 weeks -----
+    # event.date is a "YYYY-MM-DD" string; we parse it and ignore unparseable rows.
+    today = datetime.utcnow().date()
+    window_start = today - timedelta(weeks=4)
+ 
+    recent_count = 0
+    for e in participated:
+        try:
+            event_date = datetime.strptime(e.date, "%Y-%m-%d").date()
+            if window_start <= event_date <= today:
+                recent_count += 1
+        except (ValueError, TypeError):
+            continue
+ 
+    activity_avg_per_week = round(recent_count / 4.0, 2)
+ 
+    if activity_avg_per_week < 2:
+        activity_level = "Peu actif"
+    elif activity_avg_per_week < 3:
+        activity_level = "Actif"
+    else:
+        activity_level = "Très actif"
+ 
+    # bar fills up linearly between 0 and 5 events/week
+    activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
+ 
+    data = user.serialize()
+    data["stats"] = {
+        "events_created_count":      events_created_count,
+        "events_participated_count": events_participated_count,
+        "activity_avg_per_week":     activity_avg_per_week,
+        "activity_level":            activity_level,
+        "activity_percent":          activity_percent,
+    }
+    return jsonify(data), 200
+ 
+ 
+# ---------- UPDATE MY PROFILE ----------
+# Body: any subset of editable fields. Email and password are NOT editable here.
+@api.route('/profile/me', methods=['PUT'])
+@jwt_required()
+def update_my_profile():
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+ 
+    body = request.get_json() or {}
+ 
+    editable = [
+        "username",
+        "first_name",
+        "last_name",
+        "city",
+        "bio",
+        "profile_picture_url",
+        "birthdate",
+        "phone",
+    ]
+ 
+    # username must stay unique if provided
+    new_username = body.get("username")
+    if new_username and new_username != user.username:
+        clash = User.query.filter(
+            User.username == new_username,
+            User.id != current_user_id
+        ).first()
+        if clash:
+            return jsonify({"msg": "Username already taken"}), 409
+ 
+    for field in editable:
+        if field in body:
+            value = body[field]
+            # treat empty strings as None so the DB keeps clean nulls
+            setattr(user, field, value if value not in ("", None) else None)
+ 
+    db.session.commit()
+ 
+    return jsonify({"msg": "Profile updated", "user": user.serialize()}), 200
+ 
+ 
+# ---------- GET ANOTHER USER'S PROFILE ----------
+# Visibility rules:
+#   - self        -> full profile (use /profile/me)
+#   - friend      -> full profile minus password
+#   - other user  -> only public-safe fields (no email/phone/birthdate)
+# Always exposes the friendship_status with the current user.
+@api.route('/profile/<int:user_id>', methods=['GET'])
+@jwt_required()
+def get_user_profile(user_id):
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+ 
+    # friendship state with current user
+    friendship = None
+    if user_id != current_user_id:
+        friendship = Friendship.query.filter(
+            ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == user_id)) |
+            ((Friendship.requester_id == user_id) & (Friendship.addressee_id == current_user_id))
+        ).first()
+ 
+    is_self = (user_id == current_user_id)
+    is_friend = friendship is not None and friendship.status == "accepted"
+ 
+    # public payload
+    data = {
+        "id":                  user.id,
+        "username":            user.username,
+        "first_name":          user.first_name,
+        "last_name":           user.last_name,
+        "city":                user.city,
+        "bio":                 user.bio,
+        "profile_picture_url": user.profile_picture_url,
+        "created_at":          user.created_at.isoformat() if user.created_at else None,
+    }
+ 
+    # private fields revealed to self or accepted friends
+    if is_self or is_friend:
+        data["email"]     = user.email
+        data["phone"]     = user.phone
+        data["birthdate"] = user.birthdate
+ 
+    # friendship metadata
+    if is_self:
+        data["friendship_status"] = "self"
+        data["friendship_direction"] = None
+        data["friendship_id"] = None
+    elif friendship:
+        data["friendship_status"] = friendship.status
+        data["friendship_direction"] = (
+            "outgoing" if friendship.requester_id == current_user_id else "incoming"
+        )
+        data["friendship_id"] = friendship.id
+    else:
+        data["friendship_status"] = "none"
+        data["friendship_direction"] = None
+        data["friendship_id"] = None
+ 
+    # ----- same stats block as /profile/me -----
+    events_created_count = Event.query.filter(Event.creator_id == user_id).count()
+    all_events = Event.query.all()
+    participated = [e for e in all_events if user_id in [p.id for p in e.participants]]
+    events_participated_count = len(participated)
+ 
+    today = datetime.utcnow().date()
+    window_start = today - timedelta(weeks=4)
+    recent_count = 0
+    for e in participated:
+        try:
+            event_date = datetime.strptime(e.date, "%Y-%m-%d").date()
+            if window_start <= event_date <= today:
+                recent_count += 1
+        except (ValueError, TypeError):
+            continue
+ 
+    activity_avg_per_week = round(recent_count / 4.0, 2)
+    if activity_avg_per_week < 2:
+        activity_level = "Peu actif"
+    elif activity_avg_per_week < 3:
+        activity_level = "Actif"
+    else:
+        activity_level = "Très actif"
+    activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
+ 
+    data["stats"] = {
+        "events_created_count":      events_created_count,
+        "events_participated_count": events_participated_count,
+        "activity_avg_per_week":     activity_avg_per_week,
+        "activity_level":            activity_level,
+        "activity_percent":          activity_percent,
+    }
+ 
+    return jsonify(data), 200

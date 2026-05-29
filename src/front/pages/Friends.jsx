@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Container,
   Row,
@@ -142,6 +143,17 @@ const FRIENDS_CSS = `
 }
 .friends-page .list-group-item { padding: 1rem 1.25rem; }
 .friends-page .min-w-0 { min-width: 0; }
+.friends-card-clickable { cursor: pointer; }
+.friends-card-clickable .stretched-link::after {
+  border-radius: 14px;
+}
+.friend-row-link {
+  color: inherit;
+  text-decoration: none;
+  flex: 1;
+  min-width: 0;
+}
+.friend-row-link:hover { color: #fff; }
 `;
 
 // =============================================================
@@ -369,11 +381,7 @@ export const Friends = () => {
                 type="text"
                 value={searchQ}
                 onChange={(e) => setSearchQ(e.target.value)}
-                placeholder={
-                  tab === "friends"
-                    ? "Filter your friends..."
-                    : "Find people by email (min. 2 chars)..."
-                }
+                placeholder="Search people by email (min. 2 chars)..."
                 className="bg-dark border-secondary text-light"
               />
               {searchQ && (
@@ -383,9 +391,12 @@ export const Friends = () => {
               )}
             </InputGroup>
 
-            {/* search results */}
-            {tab !== "friends" && searchQ.trim().length >= 2 && (
+            {/* search results — visible on every tab */}
+            {searchQ.trim().length >= 2 && (
               <div className="mt-3">
+                <div className="small text-uppercase text-secondary mb-2 fw-semibold">
+                  People found
+                </div>
                 {searching ? (
                   <div className="text-secondary small d-flex align-items-center gap-2">
                     <Spinner animation="border" size="sm" /> Searching...
@@ -471,8 +482,14 @@ export const Friends = () => {
               <Row className="g-3 mt-1">
                 {filteredFriends.map((f) => (
                   <Col md={6} lg={4} key={f.id}>
-                    <Card className="friends-card h-100">
-                      <Card.Body className="d-flex align-items-center gap-3">
+                    <Card className="friends-card friends-card-clickable h-100">
+                      <Card.Body className="d-flex align-items-center gap-3 position-relative">
+                        {/* Full-card link (sits behind the Remove button) */}
+                        <Link
+                          to={`/friends/${f.friend.id}`}
+                          className="stretched-link"
+                          aria-label={`Open ${f.friend.email}'s profile`}
+                        />
                         <div style={avatarStyle(f.friend.id)}>
                           {initials(f.friend.email)}
                         </div>
@@ -489,8 +506,14 @@ export const Friends = () => {
                           variant="outline-danger"
                           size="sm"
                           disabled={busy === `del-${f.friend.id}`}
-                          onClick={() => setConfirmRemove(f)}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setConfirmRemove(f);
+                          }}
                           title="Remove friend"
+                          className="position-relative"
+                          style={{ zIndex: 2 }}
                         >
                           <FiTrash2 />
                         </Button>
@@ -528,7 +551,7 @@ export const Friends = () => {
                     key={req.id}
                     className="bg-transparent border-secondary text-light d-flex justify-content-between align-items-center flex-wrap gap-2"
                   >
-                    <div className="d-flex align-items-center gap-3">
+                    <Link to={`/friends/${req.friend.id}`} className="friend-row-link d-flex align-items-center gap-3">
                       <div style={avatarStyle(req.friend.id)}>
                         {initials(req.friend.email)}
                       </div>
@@ -538,7 +561,7 @@ export const Friends = () => {
                           Sent {new Date(req.created_at).toLocaleString()}
                         </div>
                       </div>
-                    </div>
+                    </Link>
                     <div className="d-flex gap-2">
                       <Button
                         variant="success"
@@ -587,7 +610,7 @@ export const Friends = () => {
                     key={req.id}
                     className="bg-transparent border-secondary text-light d-flex justify-content-between align-items-center flex-wrap gap-2"
                   >
-                    <div className="d-flex align-items-center gap-3">
+                    <Link to={`/friends/${req.friend.id}`} className="friend-row-link d-flex align-items-center gap-3">
                       <div style={avatarStyle(req.friend.id)}>
                         {initials(req.friend.email)}
                       </div>
@@ -599,7 +622,7 @@ export const Friends = () => {
                           {new Date(req.created_at).toLocaleString()}
                         </div>
                       </div>
-                    </div>
+                    </Link>
                     <Button
                       variant="outline-warning"
                       size="sm"
