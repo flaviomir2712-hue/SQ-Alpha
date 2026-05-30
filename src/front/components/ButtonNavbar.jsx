@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { Link } from "react-router-dom";
 import {
   Button,
   Modal,
@@ -20,6 +21,8 @@ import {
   FiUsers,
   FiActivity,
 } from "react-icons/fi";
+
+import { EventModal } from "./EventModal";
 
 // =====================================================
 // INLINE API HELPERS (consistent with friends/navbar style)
@@ -258,15 +261,15 @@ export const BottomNavbar = () => {
 
       {/* NAVBAR */}
       <div className="bottom-navbar">
-        <div className="bottom-item">
+        <Link to="/" className="bottom-item text-decoration-none text-reset">
           <FiHome />
           <span>home</span>
-        </div>
+        </Link>
 
-        <div className="bottom-item">
+        <Link to="/map" className="bottom-item text-decoration-none text-reset">
           <FiCompass />
           <span>explore</span>
-        </div>
+        </Link>
 
         <button
           className="bottom-item border-0 bg-transparent"
@@ -276,10 +279,10 @@ export const BottomNavbar = () => {
           <span>quest</span>
         </button>
 
-        <div className="bottom-item">
+        <Link to="/events" className="bottom-item text-decoration-none text-reset">
           <FiMessageSquare />
-          <span>inbox</span>
-        </div>
+          <span>events</span>
+        </Link>
 
         <button
           className="bottom-item border-0 bg-transparent"
@@ -480,70 +483,18 @@ export const BottomNavbar = () => {
       </Modal>
 
       {/* =====================================================
-          QUEST MODAL  (cosmetic stub, unchanged)
+          QUEST MODAL — now powered by the shared EventModal
       ===================================================== */}
-      <Modal show={showQuest} onHide={() => setShowQuest(false)} centered>
-        <Modal.Header closeButton>
-          <Modal.Title>Create Quest</Modal.Title>
-        </Modal.Header>
-
-        <Modal.Body>
-          <Form>
-            <Form.Control
-              type="date"
-              name="date"
-              className="mb-2"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              type="time"
-              name="time"
-              className="mb-2"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              type="text"
-              name="location"
-              className="mb-2"
-              placeholder="Location"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              as="textarea"
-              rows={3}
-              name="details"
-              className="mb-2"
-              placeholder="Details"
-              onChange={handleQuestChange}
-            />
-            <Form.Control
-              type="file"
-              className="mb-3"
-              onChange={handleQuestImage}
-            />
-
-            <div>
-              <strong>Invite friends</strong>
-              {friends.map((f) => (
-                <Form.Check
-                  key={f.id}
-                  type="checkbox"
-                  label={`${f.name} (${f.username})`}
-                  checked={eventData.invitedFriends.includes(f.id)}
-                  onChange={() => toggleFriend(f.id)}
-                />
-              ))}
-            </div>
-          </Form>
-        </Modal.Body>
-
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowQuest(false)}>
-            Cancel
-          </Button>
-          <Button onClick={createQuest}>Create</Button>
-        </Modal.Footer>
-      </Modal>
+      <EventModal
+        show={showQuest}
+        onHide={() => setShowQuest(false)}
+        eventId={null}
+        prefillCoords={null}
+        currentUser={JSON.parse(localStorage.getItem("user") || "null")}
+        onSaved={() => {
+          // refresh whatever needs refreshing (map, store, etc.)
+        }}
+      />
     </>
   );
 };

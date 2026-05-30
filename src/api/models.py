@@ -53,14 +53,16 @@ class Event(db.Model):
     __tablename__ = "event"
 
     id:         Mapped[int]   = mapped_column(primary_key=True)
+    title:      Mapped[str]   = mapped_column(String(120), nullable=True)
     date:       Mapped[str]   = mapped_column(String(50),  nullable=False)
     time:       Mapped[str]   = mapped_column(String(50),  nullable=False)
     location:   Mapped[str]   = mapped_column(String(255), nullable=False)
     latitude:   Mapped[float] = mapped_column(Float,       nullable=True)
     longitude:  Mapped[float] = mapped_column(Float,       nullable=True)
     details:    Mapped[str]   = mapped_column(Text,        nullable=True)
-    image:      Mapped[str]   = mapped_column(String(500), nullable=True)
+    image: Mapped[str] = mapped_column(Text, nullable=True)
     creator_id: Mapped[int]   = mapped_column(ForeignKey("user.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
 
     creator:      Mapped["User"]       = relationship("User", foreign_keys=[creator_id])
     participants: Mapped[list["User"]] = relationship(
@@ -70,6 +72,7 @@ class Event(db.Model):
     def serialize(self):
         return {
             "id":                 self.id,
+            "title":              self.title,
             "date":               self.date,
             "time":               self.time,
             "location":           self.location,
@@ -81,6 +84,7 @@ class Event(db.Model):
             "creator_email":      self.creator.email,
             "participants":       [{"id": p.id, "email": p.email} for p in self.participants],
             "participants_count": len(self.participants),
+            "created_at":         self.created_at.isoformat() if self.created_at else None,
         }
 
 
@@ -133,3 +137,54 @@ class Friendship(db.Model):
             data["friend"]    = {"id": other.id, "email": other.email} if other else None
             data["direction"] = "outgoing" if self.requester_id == current_user_id else "incoming"
         return data
+    
+
+# ── CHAT ROOM ─────────────────────────────────────────────
+# One chat room per event (auto-created when the event is created).
+# Membership is implicit: anyone in event.participants can read/write.
+class ChatRoom(db.Model):
+    __tablename__ = "chat_room"
+ 
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    event_id:   Mapped[int] = mapped_column(ForeignKey("event.id"), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+ 
+    event:    Mapped["Event"] = relationship("Event")
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        "ChatMessage", back_populates="room", cascade="all, delete-orphan", order_by="ChatMessage.created_at"
+    )
+ 
+    def serialize(self, current_user_id=None):
+        return {
+            "id":            self.id,
+            "event_id":      self.event_id,
+            "type":          "event",
+            "created_at":    self.created_at.isoformat() if self.created_at else None,
+            "participants":  [{"id": p.id, "email": p.email} for p in self.event.participants] if self.event else [],
+            "event_title":   self.event.title if self.event else None,
+            "messages_count": len(self.messages),
+        }
+ 
+ 
+# ── CHAT MESSAGE ──────────────────────────────────────────
+class ChatMessage(db.Model):
+    __tablename__ = "chat_message"
+ 
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    room_id:    Mapped[int] = mapped_column(ForeignKey("chat_room.id"), nullable=False, index=True)
+    sender_id:  Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
+    text:       Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+ 
+    room:   Mapped["ChatRoom"] = relationship("ChatRoom", back_populates="messages")
+    sender: Mapped["User"]     = relationship("User", foreign_keys=[sender_id])
+ 
+    def serialize(self):
+        return {
+            "id":           self.id,
+            "room_id":      self.room_id,
+            "sender_id":    self.sender_id,
+            "sender_email": self.sender.email if self.sender else None,
+            "text":         self.text,
+            "created_at":   self.created_at.isoformat() if self.created_at else None,
+        }

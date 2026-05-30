@@ -1,56 +1,44 @@
 import React, { useEffect, useState } from "react";
-import { Container, Card, Button, Spinner, Alert } from "react-bootstrap";
+import { Container, Spinner, Alert } from "react-bootstrap";
 import { Mapview } from "../components/Mapview";
+import { EventModal } from "../components/EventModal";
 import "./map.css";
 
 const Map = () => {
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [selectedEvent, setSelectedEvent] = useState(null);
-  const [userCenter, setUserCenter] = useState(null);
+  const [events, setEvents]               = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState(null);
+  const [userCenter, setUserCenter]       = useState(null);
 
-  useEffect(() => {
-    fetchEvents();
+  // EventModal control
+  const [modalOpen, setModalOpen]         = useState(false);
+  const [activeEventId, setActiveEventId] = useState(null);   // null => create mode
+  const [prefillCoords, setPrefillCoords] = useState(null);
 
-    // Intentar centrar el mapa en la ubicacion del usuario (silenciosamente)
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) =>
-          setUserCenter([pos.coords.latitude, pos.coords.longitude]),
-        () => {
-          /* el usuario nego permiso o no esta disponible: usamos default */
-        },
-        { timeout: 5000 }
-      );
-    }
-  }, []);
+  const currentUser = JSON.parse(localStorage.getItem("user") || "null");
 
+  // ─────────────────────────────────────────
+  // FETCH EVENTS
+  // ─────────────────────────────────────────
   const fetchEvents = async () => {
     try {
       setLoading(true);
       setError(null);
 
       const apiUrl = import.meta.env.VITE_BACKEND_URL;
-      if (!apiUrl) {
-        throw new Error(
-          "Falta VITE_BACKEND_URL en el .env del frontend"
-        );
-      }
+      const token  = localStorage.getItem("token");
 
-      const response = await fetch(`${apiUrl}/api/events`);
-      if (!response.ok) {
-        throw new Error("Failed to fetch events");
-      }
+      if (!apiUrl) throw new Error("Missing VITE_BACKEND_URL in .env");
 
-      const data = await response.json();
+      const res = await fetch(`${apiUrl}/api/events`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Failed to fetch events");
 
-      // El backend entrega latitude/longitude por separado. Lo convertimos
-      // a [lat, lng] que es lo que espera react-leaflet.
-      const normalized = data.map((e) => ({
-        ...e,
-        position: [e.latitude, e.longitude],
-      }));
+      const data = await res.json();
+      const normalized = data
+        .filter((e) => e.latitude != null && e.longitude != null)
+        .map((e) => ({ ...e, position: [e.latitude, e.longitude] }));
 
       setEvents(normalized);
     } catch (err) {
@@ -61,40 +49,50 @@ const Map = () => {
     }
   };
 
-  const handleAttendEvent = async (eventId) => {
-    try {
-      const apiUrl = import.meta.env.VITE_BACKEND_URL;
-      const token = sessionStorage.getItem("token");
+  useEffect(() => {
+    fetchEvents();
 
-      const response = await fetch(
-        `${apiUrl}/api/events/${eventId}/attend`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-        }
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setUserCenter([pos.coords.latitude, pos.coords.longitude]),
+        () => {},
+        { timeout: 5000 }
       );
-      if (!response.ok) throw new Error("Failed to attend event");
-
-      setSelectedEvent(null);
-      fetchEvents();
-    } catch (err) {
-      console.error("Error attending event:", err);
     }
+  }, []);
+
+  // ─────────────────────────────────────────
+  // MODAL handlers
+  // ─────────────────────────────────────────
+  const handleMapClick = (coords) => {
+    // click on empty area → create modal prefilled with clicked coords
+    setActiveEventId(null);
+    setPrefillCoords(coords);
+    setModalOpen(true);
   };
 
-  if (loading) {
-    return (
-      <Container className="text-center py-5">
-        <Spinner animation="border" />
-      </Container>
-    );
-  }
+  const handleMarkerClick = (event) => {
+    // click on existing marker → open event in view/edit mode
+    setActiveEventId(event.id);
+    setPrefillCoords(null);
+    setModalOpen(true);
+  };
 
+  const handleModalClose = () => {
+    setModalOpen(false);
+    setActiveEventId(null);
+    setPrefillCoords(null);
+  };
+
+  // ─────────────────────────────────────────
   return (
     <Container fluid className="map-page p-0">
+      {loading && (
+        <div className="text-center py-3">
+          <Spinner animation="border" size="sm" />
+        </div>
+      )}
+
       {error && (
         <Alert variant="danger" className="m-3">
           {error}
@@ -103,72 +101,19 @@ const Map = () => {
 
       <Mapview
         events={events}
-        setSelectedEvent={setSelectedEvent}
         center={userCenter}
+        onMapClick={handleMapClick}
+        onMarkerClick={handleMarkerClick}
       />
 
-      {selectedEvent && (
-        <div
-          className="event-modal-overlay"
-          onClick={() => setSelectedEvent(null)}
-        >
-          <Card
-            className="event-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <Card.Body>
-              <Card.Title>{selectedEvent.title}</Card.Title>
-
-              {selectedEvent.category && (
-                <p className="event-category">
-                  <span className="badge bg-info">
-                    {selectedEvent.category}
-                  </span>
-                </p>
-              )}
-
-              <p className="event-info">
-                <strong>Location:</strong>{" "}
-                {selectedEvent.location?.name || "Location TBD"}
-              </p>
-
-              <p className="event-info">
-                <strong>Date:</strong>{" "}
-                {selectedEvent.event_date
-                  ? new Date(selectedEvent.event_date).toLocaleString()
-                  : "TBD"}
-              </p>
-
-              <p className="event-info">
-                <strong>Attendees:</strong>{" "}
-                {selectedEvent.attendee_count ?? 0} /{" "}
-                {selectedEvent.max_attendees ?? "∞"}
-              </p>
-
-              {selectedEvent.description && (
-                <p className="event-description">
-                  {selectedEvent.description}
-                </p>
-              )}
-
-              <div className="modal-actions">
-                <Button
-                  variant="primary"
-                  onClick={() => handleAttendEvent(selectedEvent.id)}
-                >
-                  Attend Event
-                </Button>
-                <Button
-                  variant="outline-secondary"
-                  onClick={() => setSelectedEvent(null)}
-                >
-                  Close
-                </Button>
-              </div>
-            </Card.Body>
-          </Card>
-        </div>
-      )}
+      <EventModal
+        show={modalOpen}
+        onHide={handleModalClose}
+        eventId={activeEventId}
+        prefillCoords={prefillCoords}
+        currentUser={currentUser}
+        onSaved={fetchEvents}
+      />
     </Container>
   );
 };
