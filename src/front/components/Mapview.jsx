@@ -8,53 +8,21 @@ import MapClickHandler from "./MapClickHandler";
 import { EventModal } from "./EventModal";
 import "./mapview.css";
 
-// Fallback por defecto: Madrid
+// Fallback ultime quand on n'a pas la geoloc de l'utilisateur.
 const MADRID = [40.4168, -3.7038];
 
-// Distancia haversine en km entre dos [lat, lng]
-const haversine = (a, b) => {
-  const R = 6371;
-  const toRad = (x) => (x * Math.PI) / 180;
-  const dLat = toRad(b[0] - a[0]);
-  const dLng = toRad(b[1] - a[1]);
-  const lat1 = toRad(a[0]);
-  const lat2 = toRad(b[0]);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-};
-
-// Prioridad del centro: GPS del usuario > evento mas cercano a Madrid > Madrid
-const computeCenter = (center, events) => {
-  if (center) return center;
-
-  if (events && events.length > 0) {
-    const sorted = [...events]
-      .filter((e) => Array.isArray(e.position))
-      .sort(
-        (a, b) =>
-          haversine(MADRID, a.position) - haversine(MADRID, b.position)
-      );
-    if (sorted.length > 0) return sorted[0].position;
-  }
-
-  return MADRID;
-};
+// Priorite du centre :
+//   1. coords GPS de l'utilisateur si on les a
+//   2. fallback Madrid sinon
+const computeCenter = (userCenter) => userCenter || MADRID;
 
 /**
- * Mapview: vista de mapa autosuficiente. Asume todas las responsabilidades
- * que antes vivian en pages/Map.jsx:
- *   - fetch de /api/events
+ * Mapview: vista de mapa autosuficiente.
+ *   - fetch de /api/events (retry jusqu'a succes pour absorber les cold-starts)
  *   - geolocalizacion del usuario
  *   - estado de loading / error
  *   - apertura del EventModal (crear al clicar mapa vacio, ver/editar al
  *     clicar un marker existente)
- *
- * Props opcionales para que el padre reaccione (no son obligatorias):
- *   onMapClick(coords)     -> se dispara despues de abrir el modal de creacion
- *   onMarkerClick(event)   -> se dispara despues de abrir el modal de un evento
- *   onSaved(eventOrNull)   -> se dispara tras un guardado del EventModal
  */
 export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   // ── datos ──────────────────────────────────────────
@@ -70,33 +38,50 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
   const currentUser = JSON.parse(localStorage.getItem("user") || "null");
 
-  // ── fetch events ──────────────────────────────────
+  // ── fetch events (retry jusqu'a succes) ──────────
   const fetchEvents = async () => {
-    try {
-      setLoading(true);
-      setError(null);
+    const apiUrl = import.meta.env.VITE_BACKEND_URL;
+    const token  = localStorage.getItem("token");
 
-      const apiUrl = import.meta.env.VITE_BACKEND_URL;
-      const token  = localStorage.getItem("token");
-
-      if (!apiUrl) throw new Error("Falta VITE_BACKEND_URL en el .env del frontend");
-
-      const res = await fetch(`${apiUrl}/api/events`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) throw new Error("Failed to fetch events");
-
-      const data = await res.json();
-      const normalized = data
-        .filter((e) => e.latitude != null && e.longitude != null)
-        .map((e) => ({ ...e, position: [e.latitude, e.longitude] }));
-
-      setEvents(normalized);
-    } catch (err) {
-      setError(err.message);
-      console.error("Error fetching events:", err);
-    } finally {
+    if (!apiUrl) {
+      setError("Falta VITE_BACKEND_URL en el .env del frontend");
       setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    // Retry exponentiel jusqu'a obtenir une vraie reponse HTTP.
+    // On ne s'arrete que sur :
+    //   - succes (200)
+    //   - reponse non-OK (4xx/5xx) -> on affiche l'erreur, ca ne reviendra pas tout seul
+    let delay = 400;
+    for (;;) {
+      try {
+        const res = await fetch(`${apiUrl}/api/events`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+
+        if (!res.ok) {
+          setError(`Failed to fetch events (${res.status})`);
+          setLoading(false);
+          return;
+        }
+
+        const data = await res.json();
+        const normalized = data
+          .filter((e) => e.latitude != null && e.longitude != null)
+          .map((e) => ({ ...e, position: [e.latitude, e.longitude] }));
+
+        setEvents(normalized);
+        setLoading(false);
+        return;
+      } catch (_) {
+        // erreur reseau ("Failed to fetch") : on retente apres un backoff
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 4000);
+      }
     }
   };
 
@@ -107,17 +92,14 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
       navigator.geolocation.getCurrentPosition(
         (pos) => setUserCenter([pos.coords.latitude, pos.coords.longitude]),
         () => {
-          /* permiso denegado o no disponible: usamos fallback */
+          /* permiso denegado o no disponible: usamos fallback Madrid */
         },
         { timeout: 5000 }
       );
     }
   }, []);
 
-  const mapCenter = useMemo(
-    () => computeCenter(userCenter, events),
-    [userCenter, events]
-  );
+  const mapCenter = useMemo(() => computeCenter(userCenter), [userCenter]);
 
   // ── handlers ──────────────────────────────────────
   const handleMapClick = (coords) => {
@@ -197,6 +179,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
         prefillCoords={prefillCoords}
         currentUser={currentUser}
         onSaved={handleSaved}
+        onDeleted={() => fetchEvents()}
       />
     </Container>
   );

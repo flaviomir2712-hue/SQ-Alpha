@@ -147,10 +147,28 @@ export const EventsList = () => {
   };
 
   // ---- derived ----
+  // Un event ne compte dans "participated" que s'il est deja passe.
+  // (Coherent avec /profile/me cote backend.)
+  const isPast = (e) => {
+    if (!e?.date) return false;
+    const d = new Date(e.date);
+    if (Number.isNaN(d.getTime())) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    d.setHours(0, 0, 0, 0);
+    return d <= today;
+  };
+
   const filtered = useMemo(() => {
     let list = events;
-    if (tab === "created") list = list.filter((e) => e.creator_id === myId);
-    if (tab === "participated") list = list.filter((e) => e.creator_id !== myId);
+    if (tab === "created") {
+      list = list.filter((e) => e.creator_id === myId);
+    }
+    if (tab === "participated") {
+      // Un event compte dans "participated" des qu'il est passe,
+      // peu importe que je sois createur ou simple invite.
+      list = list.filter((e) => isPast(e));
+    }
 
     const q = searchQ.trim().toLowerCase();
     if (q) {
@@ -166,7 +184,7 @@ export const EventsList = () => {
   const counts = useMemo(() => ({
     all:          events.length,
     created:      events.filter((e) => e.creator_id === myId).length,
-    participated: events.filter((e) => e.creator_id !== myId).length,
+    participated: events.filter((e) => isPast(e)).length,
   }), [events, myId]);
 
   return (
@@ -290,6 +308,7 @@ export const EventsList = () => {
         prefillCoords={null}
         currentUser={currentUser}
         onSaved={reload}
+        onDeleted={reload}
       />
     </div>
   );

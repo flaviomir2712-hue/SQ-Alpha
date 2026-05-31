@@ -246,6 +246,31 @@ def invite_to_event(event_id):
     return jsonify({"msg": "Friend invited", "event": event.serialize()}), 201
  
  
+# ---------- DELETE EVENT (creator only) ----------
+# Supprime l'event + sa ChatRoom + ses ChatMessages (cascade).
+@api.route('/events/<int:event_id>', methods=['DELETE'])
+@jwt_required()
+def delete_event(event_id):
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    if event.creator_id != current_user_id:
+        return jsonify({"msg": "Only the creator can delete this event"}), 403
+
+    # Detache les participants (table d'association) avant de supprimer
+    event.participants.clear()
+
+    # Supprime la ChatRoom liee (les messages partent en cascade)
+    room = ChatRoom.query.filter_by(event_id=event_id).first()
+    if room:
+        db.session.delete(room)
+
+    db.session.delete(event)
+    db.session.commit()
+    return jsonify({"msg": "Event deleted"}), 200
+
+
 # ---------- REMOVE PARTICIPANT ----------
 # Rules:
 #   - creator can remove anyone except themself
@@ -525,16 +550,26 @@ def get_my_profile():
  
     # ----- count events created and participated -----
     events_created_count = Event.query.filter(Event.creator_id == current_user_id).count()
- 
-    all_events = Event.query.all()
-    participated = [e for e in all_events if current_user_id in [p.id for p in e.participants]]
-    events_participated_count = len(participated)
- 
-    # ----- compute activity over the last 4 weeks -----
-    # event.date is a "YYYY-MM-DD" string; we parse it and ignore unparseable rows.
+
     today = datetime.utcnow().date()
+
+    all_events = Event.query.all()
+    participated_all = [e for e in all_events if current_user_id in [p.id for p in e.participants]]
+
+    # Un event ne compte dans "participated" QUE s'il est deja passe (date <= today).
+    # Les events futurs ou date non parseable sont exclus.
+    def _is_past(e):
+        try:
+            return datetime.strptime(e.date, "%Y-%m-%d").date() <= today
+        except (ValueError, TypeError):
+            return False
+
+    participated = [e for e in participated_all if _is_past(e)]
+    events_participated_count = len(participated)
+
+    # ----- compute activity over the last 4 weeks -----
     window_start = today - timedelta(weeks=4)
- 
+
     recent_count = 0
     for e in participated:
         try:
@@ -543,7 +578,7 @@ def get_my_profile():
                 recent_count += 1
         except (ValueError, TypeError):
             continue
- 
+
     activity_avg_per_week = round(recent_count / 4.0, 2)
  
     if activity_avg_per_week < 2:
@@ -672,11 +707,22 @@ def get_user_profile(user_id):
  
     # ----- same stats block as /profile/me -----
     events_created_count = Event.query.filter(Event.creator_id == user_id).count()
-    all_events = Event.query.all()
-    participated = [e for e in all_events if user_id in [p.id for p in e.participants]]
-    events_participated_count = len(participated)
- 
+
     today = datetime.utcnow().date()
+
+    all_events = Event.query.all()
+    participated_all = [e for e in all_events if user_id in [p.id for p in e.participants]]
+
+    # Meme regle qu'au-dessus : seuls les events passes comptent.
+    def _is_past(e):
+        try:
+            return datetime.strptime(e.date, "%Y-%m-%d").date() <= today
+        except (ValueError, TypeError):
+            return False
+
+    participated = [e for e in participated_all if _is_past(e)]
+    events_participated_count = len(participated)
+
     window_start = today - timedelta(weeks=4)
     recent_count = 0
     for e in participated:

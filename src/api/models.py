@@ -155,14 +155,28 @@ class ChatRoom(db.Model):
     )
  
     def serialize(self, current_user_id=None):
+        # Le dernier message (s'il existe) pour le preview navbar
+        last = self.messages[-1] if self.messages else None
+        last_message = None
+        if last:
+            last_message = {
+                "id":           last.id,
+                "text":         last.text,
+                "sender_id":    last.sender_id,
+                "sender_email": last.sender.email if last.sender else None,
+                "created_at":   last.created_at.isoformat() if last.created_at else None,
+            }
+
         return {
-            "id":            self.id,
-            "event_id":      self.event_id,
-            "type":          "event",
-            "created_at":    self.created_at.isoformat() if self.created_at else None,
-            "participants":  [{"id": p.id, "email": p.email} for p in self.event.participants] if self.event else [],
-            "event_title":   self.event.title if self.event else None,
+            "id":             self.id,
+            "event_id":       self.event_id,
+            "type":           "event",
+            "created_at":     self.created_at.isoformat() if self.created_at else None,
+            "participants":   [{"id": p.id, "email": p.email} for p in self.event.participants] if self.event else [],
+            "event_title":    self.event.title if self.event else None,
+            "event_image":    self.event.image if self.event else None,
             "messages_count": len(self.messages),
+            "last_message":   last_message,
         }
  
  

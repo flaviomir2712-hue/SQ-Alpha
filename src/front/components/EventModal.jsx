@@ -46,6 +46,7 @@ const handle = async (res) => {
 const apiGetEvent       = (id) => fetch(`${API}/api/events/${id}`, { headers: authHeaders() }).then(handle);
 const apiCreateEvent    = (body) => fetch(`${API}/api/events`,        { method: "POST",   headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
 const apiUpdateEvent    = (id, body) => fetch(`${API}/api/events/${id}`,  { method: "PUT",  headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
+const apiDeleteEvent    = (id) => fetch(`${API}/api/events/${id}`,  { method: "DELETE", headers: authHeaders() }).then(handle);
 const apiInviteFriend   = (id, userId) => fetch(`${API}/api/events/${id}/invite`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ user_id: userId }) }).then(handle);
 const apiRemoveMember   = (id, userId) => fetch(`${API}/api/events/${id}/participants/${userId}`, { method: "DELETE", headers: authHeaders() }).then(handle);
 const apiGetMessages    = (id) => fetch(`${API}/api/events/${id}/chat/messages`, { headers: authHeaders() }).then(handle);
@@ -184,6 +185,7 @@ export const EventModal = ({
   prefillCoords = null,
   currentUser = null,
   onSaved = () => {},
+  onDeleted = () => {},
 }) => {
   const isEditMode = !!eventId;
   const [tab, setTab] = useState("details");
@@ -203,6 +205,7 @@ export const EventModal = ({
   const [eventData, setEventData] = useState(null); // hydrated server response
   const [loading, setLoading] = useState(false);
   const [saving, setSaving]   = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError]     = useState(null);
   const [toast, setToast]     = useState(null);
 
@@ -404,6 +407,25 @@ export const EventModal = ({
       onSaved(data.event);
     } catch (e) {
       showToast(e.message, "danger");
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!isEditMode) return;
+    const ok = window.confirm(
+      "Delete this event? This will also remove its chat and all participants. This cannot be undone."
+    );
+    if (!ok) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await apiDeleteEvent(eventId);
+      onDeleted(eventId);
+      onHide();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -720,9 +742,22 @@ export const EventModal = ({
       </Modal.Body>
 
       <Modal.Footer>
+        {isEditMode && isCreator && (
+          <Button
+            variant="outline-danger"
+            onClick={handleDelete}
+            disabled={deleting || saving}
+            className="me-auto"
+          >
+            {deleting
+              ? <Spinner animation="border" size="sm" />
+              : <><FiTrash2 className="me-1" /> Delete event</>
+            }
+          </Button>
+        )}
         <Button variant="outline-light" onClick={onHide}>Close</Button>
         {(!isEditMode || isCreator) && (
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={saving || deleting}>
             {saving
               ? <Spinner animation="border" size="sm" />
               : <><FiSave className="me-1" /> {isEditMode ? "Save changes" : "Create"}</>
