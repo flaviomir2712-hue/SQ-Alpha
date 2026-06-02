@@ -4,22 +4,25 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 from werkzeug.security import generate_password_hash, check_password_hash
 from api.models import (
     db, User, Event, Friendship, ChatRoom, ChatMessage,
-    Notification, ChatRoomMembership,
+    Notification, EventInvitation, ChatRoomMembership,
 )
 from datetime import datetime, timedelta
 api = Blueprint('api', __name__)
 CORS(api)
 
 
+# How long a sender can edit their own chat message after posting it.
+CHAT_EDIT_WINDOW = timedelta(minutes=15)
+
+
 # =========================================================
 # NOTIFICATION HELPERS (internal)
 # =========================================================
-# Wrap notification creation/cleanup so the existing handlers
-# stay readable. These helpers never commit on their own — the
-# caller commits once at the end of its request.
+# Wrap notification creation / cleanup so the handlers stay readable.
+# These helpers never commit on their own — the caller commits once at
+# the end of its request.
 
 def _create_notification(user_id, notif_type, payload):
-    """Create a notification row. Caller is responsible for db.session.commit()."""
     notif = Notification(
         user_id=user_id,
         type=notif_type,
@@ -38,13 +41,6 @@ def _delete_friend_request_notifications(friendship_id):
             db.session.delete(n)
 
 
-def _mark_friend_request_notifications_read(friendship_id):
-    notifs = Notification.query.filter_by(type="friend_request").all()
-    for n in notifs:
-        if (n.payload or {}).get("friendship_id") == friendship_id:
-            n.is_read = True
-
-
 def _delete_event_invite_notifications(event_id, user_id=None):
     """
     Drop event_invite notifications for an event.
@@ -57,6 +53,10 @@ def _delete_event_invite_notifications(event_id, user_id=None):
         if (n.payload or {}).get("event_id") == event_id:
             db.session.delete(n)
 
+
+# =========================================================
+# CHAT MEMBERSHIP HELPER (internal)
+# =========================================================
 
 def _get_or_create_membership(room_id, user_id):
     m = ChatRoomMembership.query.filter_by(room_id=room_id, user_id=user_id).first()
@@ -182,42 +182,56 @@ def create_event():
         creator_id=current_user_id
     )
 
-    # add creator as participant automatically
+    # Creator is the only initial participant. Invited friends become
+    # participants only after they accept the invitation.
     event.participants.append(creator)
 
-    # add invited friends
-    invited_users = []
-    for friend_id in body.get("invitedFriends", []):
-        friend = db.session.get(User, friend_id)
-        if friend and friend.id != current_user_id:
-            event.participants.append(friend)
-            invited_users.append(friend)
-
     db.session.add(event)
-    db.session.flush()  # need event.id before creating the chat room
+    db.session.flush()  # need event.id
 
-    # auto-create the chat room for this event
-    room = ChatRoom(event_id=event.id)
+    # auto-create the event chat room (only participants can read/write,
+    # so invited friends will gain access once they accept)
+    room = ChatRoom(type="event", event_id=event.id)
     db.session.add(room)
 
-    # one notification per invited friend
-    for friend in invited_users:
+    # Pending invitations for the invited friends
+    invitations = []
+    seen = {current_user_id}
+    for friend_id in body.get("invitedFriends", []):
+        if friend_id in seen:
+            continue
+        friend = db.session.get(User, friend_id)
+        if not friend:
+            continue
+        inv = EventInvitation(
+            event_id=event.id,
+            user_id=friend.id,
+            inviter_id=current_user_id,
+        )
+        db.session.add(inv)
+        invitations.append((friend, inv))
+        seen.add(friend_id)
+
+    db.session.flush()  # need invitation.id for the notification payload
+
+    for friend, inv in invitations:
         _create_notification(
             user_id=friend.id,
             notif_type="event_invite",
             payload={
-                "event_id":    event.id,
-                "from_user_id": current_user_id,
-                "from_email":  creator.email,
-                "event_title": event.title,
-                "event_date":  event.date,
-                "event_time":  event.time,
+                "event_id":      event.id,
+                "invitation_id": inv.id,
+                "from_user_id":  current_user_id,
+                "from_email":    creator.email,
+                "event_title":   event.title,
+                "event_date":    event.date,
+                "event_time":    event.time,
             },
         )
 
     db.session.commit()
 
-    return jsonify({"msg": "Event created", "event": event.serialize()}), 201
+    return jsonify({"msg": "Event created", "event": event.serialize(current_user_id=current_user_id)}), 201
 
 
 @api.route('/events', methods=['GET'])
@@ -225,15 +239,21 @@ def create_event():
 def get_events():
     current_user_id = int(get_jwt_identity())
 
-    # returns events where the user is creator OR was invited
+    # returns events where the user is creator, accepted participant, or
+    # has a pending invitation
     all_events = Event.query.all()
-    visible = [
-        e for e in all_events
-        if e.creator_id == current_user_id
-        or current_user_id in [p.id for p in e.participants]
-    ]
+    visible = []
+    for e in all_events:
+        if e.creator_id == current_user_id:
+            visible.append(e)
+            continue
+        if current_user_id in [p.id for p in e.participants]:
+            visible.append(e)
+            continue
+        if any(inv.user_id == current_user_id for inv in (e.invitations or [])):
+            visible.append(e)
 
-    return jsonify([e.serialize() for e in visible]), 200
+    return jsonify([e.serialize(current_user_id=current_user_id) for e in visible]), 200
 
 # =========================================================
 # EVENT MANAGEMENT (single event, update, invite, remove)
@@ -251,12 +271,12 @@ def get_event(event_id):
     is_creator = (event.creator_id == current_user_id)
     is_participant = current_user_id in [p.id for p in event.participants]
 
-    data = event.serialize()
+    data = event.serialize(current_user_id=current_user_id)
     data["is_creator"]     = is_creator
     data["is_participant"] = is_participant
 
     # attach chat room id so the client can open the conversation directly
-    room = ChatRoom.query.filter_by(event_id=event_id).first()
+    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
     data["chat_room_id"] = room.id if room else None
 
     return jsonify(data), 200
@@ -281,11 +301,12 @@ def update_event(event_id):
             setattr(event, field, body[field])
 
     db.session.commit()
-    return jsonify({"msg": "Event updated", "event": event.serialize()}), 200
+    return jsonify({"msg": "Event updated", "event": event.serialize(current_user_id=current_user_id)}), 200
 
 
 # ---------- INVITE FRIEND TO EVENT (creator only) ----------
 # Body: { "user_id": <int> }
+# Creates a pending invitation. Invitee accepts via PUT /events/<id>/accept.
 @api.route('/events/<int:event_id>/invite', methods=['POST'])
 @jwt_required()
 def invite_to_event(event_id):
@@ -305,7 +326,6 @@ def invite_to_event(event_id):
     if not target:
         return jsonify({"msg": "User not found"}), 404
 
-    # must be an accepted friend of the creator
     is_friend = Friendship.query.filter(
         Friendship.status == "accepted",
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target_id)) |
@@ -317,28 +337,101 @@ def invite_to_event(event_id):
     if target_id in [p.id for p in event.participants]:
         return jsonify({"msg": "User is already a participant"}), 409
 
-    event.participants.append(target)
+    existing_inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=target_id
+    ).first()
+    if existing_inv:
+        return jsonify({"msg": "User has already been invited"}), 409
+
+    inv = EventInvitation(
+        event_id=event.id,
+        user_id=target.id,
+        inviter_id=current_user_id,
+    )
+    db.session.add(inv)
+    db.session.flush()
 
     creator = db.session.get(User, current_user_id)
     _create_notification(
         user_id=target.id,
         notif_type="event_invite",
         payload={
-            "event_id":    event.id,
-            "from_user_id": current_user_id,
-            "from_email":  creator.email,
-            "event_title": event.title,
-            "event_date":  event.date,
-            "event_time":  event.time,
+            "event_id":      event.id,
+            "invitation_id": inv.id,
+            "from_user_id":  current_user_id,
+            "from_email":    creator.email,
+            "event_title":   event.title,
+            "event_date":    event.date,
+            "event_time":    event.time,
         },
     )
 
     db.session.commit()
-    return jsonify({"msg": "Friend invited", "event": event.serialize()}), 201
+    return jsonify({
+        "msg":        "Friend invited",
+        "event":      event.serialize(current_user_id=current_user_id),
+        "invitation": inv.serialize(),
+    }), 201
+
+
+# ---------- ACCEPT AN EVENT INVITATION ----------
+# Caller must be the invitee. Moves them to participants, deletes the
+# invitation row and the linked notification.
+@api.route('/events/<int:event_id>/accept', methods=['PUT'])
+@jwt_required()
+def accept_event_invitation(event_id):
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=current_user_id
+    ).first()
+    if not inv:
+        return jsonify({"msg": "No pending invitation for this event"}), 404
+
+    user = db.session.get(User, current_user_id)
+    if user not in event.participants:
+        event.participants.append(user)
+
+    db.session.delete(inv)
+    _delete_event_invite_notifications(event_id, user_id=current_user_id)
+
+    db.session.commit()
+    return jsonify({
+        "msg":   "Invitation accepted",
+        "event": event.serialize(current_user_id=current_user_id),
+    }), 200
+
+
+# ---------- REFUSE AN EVENT INVITATION ----------
+# Caller must be the invitee. Deletes the invitation row and the linked
+# notification. The user does NOT become a participant.
+@api.route('/events/<int:event_id>/refuse', methods=['PUT'])
+@jwt_required()
+def refuse_event_invitation(event_id):
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=current_user_id
+    ).first()
+    if not inv:
+        return jsonify({"msg": "No pending invitation for this event"}), 404
+
+    db.session.delete(inv)
+    _delete_event_invite_notifications(event_id, user_id=current_user_id)
+
+    db.session.commit()
+    return jsonify({"msg": "Invitation refused"}), 200
 
 
 # ---------- DELETE EVENT (creator only) ----------
-# Supprime l'event + sa ChatRoom + ses ChatMessages (cascade) + notifs liees.
+# Removes the event + its ChatRoom + ChatMessages (cascade) + memberships
+# (cascade) + all pending invitations + all event_invite notifications.
 @api.route('/events/<int:event_id>', methods=['DELETE'])
 @jwt_required()
 def delete_event(event_id):
@@ -352,11 +445,15 @@ def delete_event(event_id):
     # drop every event_invite notification pointing at this event
     _delete_event_invite_notifications(event_id)
 
-    # detach participants (association table) before deleting
+    # drop pending invitations explicitly (relationship has cascade but
+    # we're being defensive against any orphan)
+    EventInvitation.query.filter_by(event_id=event_id).delete()
+
+    # detach participants
     event.participants.clear()
 
-    # delete the ChatRoom (messages + memberships cascade)
-    room = ChatRoom.query.filter_by(event_id=event_id).first()
+    # delete the chat room (messages + memberships cascade)
+    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
     if room:
         db.session.delete(room)
 
@@ -365,9 +462,9 @@ def delete_event(event_id):
     return jsonify({"msg": "Event deleted"}), 200
 
 
-# ---------- REMOVE PARTICIPANT ----------
+# ---------- REMOVE PARTICIPANT / CANCEL INVITATION ----------
 # Rules:
-#   - creator can remove anyone except themself
+#   - creator can remove anyone except themself (participants OR pending invitees)
 #   - non-creator can only remove themself (leave the event)
 @api.route('/events/<int:event_id>/participants/<int:user_id>', methods=['DELETE'])
 @jwt_required()
@@ -383,17 +480,23 @@ def remove_participant(event_id, user_id):
     if current_user_id != event.creator_id and current_user_id != user_id:
         return jsonify({"msg": "Not allowed"}), 403
 
+    # Accepted participant?
     target = next((p for p in event.participants if p.id == user_id), None)
-    if not target:
-        return jsonify({"msg": "User is not a participant"}), 404
+    if target:
+        event.participants.remove(target)
+        _delete_event_invite_notifications(event_id, user_id=user_id)
+        db.session.commit()
+        return jsonify({"msg": "Participant removed", "event": event.serialize(current_user_id=current_user_id)}), 200
 
-    event.participants.remove(target)
+    # Pending invitee?
+    inv = EventInvitation.query.filter_by(event_id=event_id, user_id=user_id).first()
+    if inv:
+        db.session.delete(inv)
+        _delete_event_invite_notifications(event_id, user_id=user_id)
+        db.session.commit()
+        return jsonify({"msg": "Invitation cancelled", "event": event.serialize(current_user_id=current_user_id)}), 200
 
-    # clean up the invite notification for that user (if any)
-    _delete_event_invite_notifications(event_id, user_id=user_id)
-
-    db.session.commit()
-    return jsonify({"msg": "Participant removed", "event": event.serialize()}), 200
+    return jsonify({"msg": "User is not a participant nor invited"}), 404
 
 # =========================================================
 # FRIENDS
@@ -415,9 +518,6 @@ def list_friends():
 
 
 # ---------- LIST PENDING REQUESTS ----------
-# ?direction=incoming  -> requests sent TO me     (default)
-# ?direction=outgoing  -> requests sent BY me
-# ?direction=all       -> both
 @api.route('/friends/requests', methods=['GET'])
 @jwt_required()
 def list_friend_requests():
@@ -442,7 +542,6 @@ def list_friend_requests():
 
 
 # ---------- SEND A FRIEND REQUEST ----------
-# Body: { "user_id": <int> }  OR  { "email": "<str>" }
 @api.route('/friends/requests', methods=['POST'])
 @jwt_required()
 def send_friend_request():
@@ -461,7 +560,6 @@ def send_friend_request():
     if target.id == current_user_id:
         return jsonify({"msg": "You cannot friend yourself"}), 400
 
-    # look for an existing row in either direction
     existing = Friendship.query.filter(
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target.id)) |
         ((Friendship.requester_id == target.id) & (Friendship.addressee_id == current_user_id))
@@ -480,7 +578,7 @@ def send_friend_request():
                 "msg": "A request is already pending",
                 "friendship": existing.serialize(current_user_id=current_user_id)
             }), 409
-        # status == "refused"  ->  allow reopening by resetting to pending
+        # status == "refused"  ->  allow reopening
         existing.requester_id = current_user_id
         existing.addressee_id = target.id
         existing.status = "pending"
@@ -507,7 +605,7 @@ def send_friend_request():
         status="pending"
     )
     db.session.add(new_friendship)
-    db.session.flush()  # need friendship.id before creating the notification
+    db.session.flush()
 
     _create_notification(
         user_id=target.id,
@@ -542,8 +640,6 @@ def accept_friend_request(request_id):
         return jsonify({"msg": f"Request is already {friendship.status}"}), 409
 
     friendship.status = "accepted"
-
-    # this notification is now resolved -> drop it from the inbox
     _delete_friend_request_notifications(friendship.id)
 
     db.session.commit()
@@ -569,7 +665,6 @@ def refuse_friend_request(request_id):
         return jsonify({"msg": f"Request is already {friendship.status}"}), 409
 
     friendship.status = "refused"
-
     _delete_friend_request_notifications(friendship.id)
 
     db.session.commit()
@@ -602,7 +697,6 @@ def cancel_friend_request(request_id):
 
 
 # ---------- DELETE / UNFRIEND ----------
-# Removes any accepted friendship between me and <user_id>.
 @api.route('/friends/<int:user_id>', methods=['DELETE'])
 @jwt_required()
 def unfriend(user_id):
@@ -623,8 +717,7 @@ def unfriend(user_id):
     return jsonify({"msg": "Friend removed"}), 200
 
 
-# ---------- SEARCH USERS (helper for adding friends) ----------
-# ?q=<string> matches against email, returns up to 20 users, excludes me.
+# ---------- SEARCH USERS ----------
 @api.route('/friends/search', methods=['GET'])
 @jwt_required()
 def search_users():
@@ -639,7 +732,6 @@ def search_users():
              .limit(20)
              .all())
 
-    # Augment with current friendship status so the UI can show the right button.
     results = []
     for u in users:
         pair = Friendship.query.filter(
@@ -665,7 +757,6 @@ def search_users():
 # PROFILE
 # =========================================================
 
-# ---------- GET MY PROFILE ----------
 @api.route('/profile/me', methods=['GET'])
 @jwt_required()
 def get_my_profile():
@@ -723,7 +814,6 @@ def get_my_profile():
     return jsonify(data), 200
 
 
-# ---------- UPDATE MY PROFILE ----------
 @api.route('/profile/me', methods=['PUT'])
 @jwt_required()
 def update_my_profile():
@@ -764,7 +854,6 @@ def update_my_profile():
     return jsonify({"msg": "Profile updated", "user": user.serialize()}), 200
 
 
-# ---------- GET ANOTHER USER'S PROFILE ----------
 @api.route('/profile/<int:user_id>', methods=['GET'])
 @jwt_required()
 def get_user_profile(user_id):
@@ -863,19 +952,32 @@ def get_user_profile(user_id):
 # CHAT
 # =========================================================
 
+def _can_access_room(room, user_id):
+    if room.type == "event":
+        return room.event is not None and user_id in [p.id for p in room.event.participants]
+    if room.type == "dm":
+        return user_id in (room.user_a_id, room.user_b_id)
+    return False
+
+
 # ---------- LIST MY CHAT ROOMS ----------
-# Returns one row per event where I am a participant, each with
-# its unread_count for the current user.
+# Returns every room I can access (event-chats where I am an accepted
+# participant AND every 1-on-1 DM I belong to). Each row carries the
+# unread_count computed against my ChatRoomMembership.last_read_at.
+# Sorted by last activity desc.
 @api.route('/chat/rooms', methods=['GET'])
 @jwt_required()
 def list_chat_rooms():
     current_user_id = int(get_jwt_identity())
 
     all_rooms = ChatRoom.query.all()
-    visible = [
-        r for r in all_rooms
-        if r.event and current_user_id in [p.id for p in r.event.participants]
-    ]
+    visible = [r for r in all_rooms if _can_access_room(r, current_user_id)]
+
+    def _sort_key(r):
+        last = r.messages[-1] if r.messages else None
+        return last.created_at if last else r.created_at
+
+    visible.sort(key=_sort_key, reverse=True)
 
     return jsonify([r.serialize(current_user_id=current_user_id) for r in visible]), 200
 
@@ -889,11 +991,12 @@ def chat_unread_count():
     all_rooms = ChatRoom.query.all()
     total = 0
     for r in all_rooms:
-        if not r.event or current_user_id not in [p.id for p in r.event.participants]:
+        if not _can_access_room(r, current_user_id):
             continue
-        membership = ChatRoomMembership.query.filter_by(
-            room_id=r.id, user_id=current_user_id
-        ).first()
+        membership = next(
+            (m for m in r.memberships if m.user_id == current_user_id),
+            None,
+        )
         last_read_at = membership.last_read_at if membership else None
         for msg in r.messages:
             if msg.sender_id == current_user_id:
@@ -909,20 +1012,17 @@ def chat_unread_count():
 # Idempotent — safe to spam from the UI on every open.
 @api.route('/chat/rooms/<int:room_id>/read', methods=['PUT'])
 @jwt_required()
-def mark_room_read(room_id):
+def mark_chat_room_read(room_id):
     current_user_id = int(get_jwt_identity())
     room = db.session.get(ChatRoom, room_id)
     if not room:
         return jsonify({"msg": "Room not found"}), 404
-
-    # must be a participant of the underlying event
-    if not room.event or current_user_id not in [p.id for p in room.event.participants]:
-        return jsonify({"msg": "Not a participant of this room"}), 403
+    if not _can_access_room(room, current_user_id):
+        return jsonify({"msg": "Not allowed in this room"}), 403
 
     membership = _get_or_create_membership(room_id, current_user_id)
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
-
     return jsonify({
         "msg":          "Room marked as read",
         "room_id":      room_id,
@@ -930,7 +1030,197 @@ def mark_room_read(room_id):
     }), 200
 
 
-# ---------- LIST MESSAGES OF AN EVENT ----------
+# ---------- CREATE / GET A DM WITH A FRIEND ----------
+@api.route('/chat/dm', methods=['POST'])
+@jwt_required()
+def create_or_get_dm():
+    current_user_id = int(get_jwt_identity())
+    body = request.get_json() or {}
+    target_id = body.get("user_id")
+
+    if not target_id:
+        return jsonify({"msg": "user_id is required"}), 400
+    if target_id == current_user_id:
+        return jsonify({"msg": "You cannot DM yourself"}), 400
+
+    target = db.session.get(User, target_id)
+    if not target:
+        return jsonify({"msg": "User not found"}), 404
+
+    is_friend = Friendship.query.filter(
+        Friendship.status == "accepted",
+        ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target_id)) |
+        ((Friendship.requester_id == target_id) & (Friendship.addressee_id == current_user_id))
+    ).first()
+    if not is_friend:
+        return jsonify({"msg": "You can only DM accepted friends"}), 403
+
+    user_a, user_b = sorted([current_user_id, target_id])
+
+    room = ChatRoom.query.filter_by(type="dm", user_a_id=user_a, user_b_id=user_b).first()
+    if room:
+        return jsonify({
+            "msg":  "DM already exists",
+            "room": room.serialize(current_user_id=current_user_id),
+        }), 200
+
+    room = ChatRoom(type="dm", user_a_id=user_a, user_b_id=user_b)
+    db.session.add(room)
+    db.session.commit()
+
+    return jsonify({
+        "msg":  "DM created",
+        "room": room.serialize(current_user_id=current_user_id),
+    }), 201
+
+
+# ---------- SEARCH CHATS ----------
+@api.route('/chat/search', methods=['GET'])
+@jwt_required()
+def chat_search():
+    current_user_id = int(get_jwt_identity())
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 1:
+        return jsonify({"event_rooms": [], "friends": []}), 200
+
+    q_low = q.lower()
+
+    event_rooms = []
+    all_rooms = ChatRoom.query.filter_by(type="event").all()
+    for r in all_rooms:
+        if not r.event:
+            continue
+        if current_user_id not in [p.id for p in r.event.participants]:
+            continue
+        title = (r.event.title or "").lower()
+        if q_low in title:
+            event_rooms.append(r.serialize(current_user_id=current_user_id))
+
+    friendships = Friendship.query.filter(
+        Friendship.status == "accepted",
+        (Friendship.requester_id == current_user_id) |
+        (Friendship.addressee_id == current_user_id)
+    ).all()
+
+    friends = []
+    for f in friendships:
+        other = f.addressee if f.requester_id == current_user_id else f.requester
+        if not other:
+            continue
+        email = (other.email or "").lower()
+        username = (other.username or "").lower()
+        if q_low not in email and q_low not in username:
+            continue
+
+        ua, ub = sorted([current_user_id, other.id])
+        dm = ChatRoom.query.filter_by(type="dm", user_a_id=ua, user_b_id=ub).first()
+        friends.append({
+            "user": {
+                "id":                  other.id,
+                "email":               other.email,
+                "username":            other.username,
+                "profile_picture_url": other.profile_picture_url,
+            },
+            "room": dm.serialize(current_user_id=current_user_id) if dm else None,
+        })
+
+    return jsonify({"event_rooms": event_rooms, "friends": friends}), 200
+
+
+# ---------- LIST MESSAGES OF A ROOM ----------
+@api.route('/chat/rooms/<int:room_id>/messages', methods=['GET'])
+@jwt_required()
+def list_room_messages(room_id):
+    current_user_id = int(get_jwt_identity())
+    room = db.session.get(ChatRoom, room_id)
+    if not room:
+        return jsonify({"msg": "Room not found"}), 404
+    if not _can_access_room(room, current_user_id):
+        return jsonify({"msg": "Not allowed in this room"}), 403
+
+    messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
+    return jsonify({
+        "room_id":  room.id,
+        "type":     room.type,
+        "messages": [m.serialize() for m in messages],
+    }), 200
+
+
+# ---------- SEND A MESSAGE IN A ROOM ----------
+@api.route('/chat/rooms/<int:room_id>/messages', methods=['POST'])
+@jwt_required()
+def post_room_message(room_id):
+    current_user_id = int(get_jwt_identity())
+    room = db.session.get(ChatRoom, room_id)
+    if not room:
+        return jsonify({"msg": "Room not found"}), 404
+    if not _can_access_room(room, current_user_id):
+        return jsonify({"msg": "Not allowed in this room"}), 403
+
+    body = request.get_json() or {}
+    text = (body.get("text") or "").strip() or None
+    media_url = body.get("media_url") or None
+    media_type = body.get("media_type") or None
+
+    if not text and not media_url:
+        return jsonify({"msg": "text or media_url is required"}), 400
+    if media_url and media_type not in ("image", "audio"):
+        return jsonify({"msg": "media_type must be 'image' or 'audio' when media_url is set"}), 400
+
+    msg = ChatMessage(
+        room_id=room.id,
+        sender_id=current_user_id,
+        text=text,
+        media_url=media_url,
+        media_type=media_type,
+    )
+    db.session.add(msg)
+
+    # sender has obviously "read" their own message
+    membership = _get_or_create_membership(room.id, current_user_id)
+    membership.last_read_at = datetime.utcnow()
+
+    db.session.commit()
+
+    return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
+
+
+# ---------- EDIT A MESSAGE ----------
+# Only the sender, only within the 15-min edit window, only the text part.
+# Media attachments stay untouched. Bumps edited_at.
+@api.route('/chat/rooms/<int:room_id>/messages/<int:msg_id>', methods=['PUT'])
+@jwt_required()
+def edit_room_message(room_id, msg_id):
+    current_user_id = int(get_jwt_identity())
+    room = db.session.get(ChatRoom, room_id)
+    if not room:
+        return jsonify({"msg": "Room not found"}), 404
+    if not _can_access_room(room, current_user_id):
+        return jsonify({"msg": "Not allowed in this room"}), 403
+
+    msg = db.session.get(ChatMessage, msg_id)
+    if not msg or msg.room_id != room_id:
+        return jsonify({"msg": "Message not found"}), 404
+    if msg.sender_id != current_user_id:
+        return jsonify({"msg": "You can only edit your own messages"}), 403
+
+    age = datetime.utcnow() - msg.created_at
+    if age > CHAT_EDIT_WINDOW:
+        return jsonify({"msg": "Edit window expired (15 min)"}), 409
+
+    body = request.get_json() or {}
+    new_text = (body.get("text") or "").strip()
+    if not new_text:
+        return jsonify({"msg": "text is required"}), 400
+
+    msg.text = new_text
+    msg.edited_at = datetime.utcnow()
+    db.session.commit()
+
+    return jsonify({"msg": "Message updated", "message": msg.serialize()}), 200
+
+
+# ---------- LEGACY: LIST MESSAGES OF AN EVENT ----------
 @api.route('/events/<int:event_id>/chat/messages', methods=['GET'])
 @jwt_required()
 def list_event_messages(event_id):
@@ -941,10 +1231,9 @@ def list_event_messages(event_id):
     if current_user_id not in [p.id for p in event.participants]:
         return jsonify({"msg": "Not a participant of this event"}), 403
 
-    room = ChatRoom.query.filter_by(event_id=event_id).first()
+    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
     if not room:
-        # legacy event without a room: create one on the fly
-        room = ChatRoom(event_id=event_id)
+        room = ChatRoom(type="event", event_id=event_id)
         db.session.add(room)
         db.session.commit()
 
@@ -955,7 +1244,7 @@ def list_event_messages(event_id):
     }), 200
 
 
-# ---------- SEND A MESSAGE ----------
+# ---------- LEGACY: SEND A MESSAGE IN AN EVENT CHAT ----------
 @api.route('/events/<int:event_id>/chat/messages', methods=['POST'])
 @jwt_required()
 def post_event_message(event_id):
@@ -967,20 +1256,30 @@ def post_event_message(event_id):
         return jsonify({"msg": "Not a participant of this event"}), 403
 
     body = request.get_json() or {}
-    text = (body.get("text") or "").strip()
-    if not text:
-        return jsonify({"msg": "text is required"}), 400
+    text = (body.get("text") or "").strip() or None
+    media_url = body.get("media_url") or None
+    media_type = body.get("media_type") or None
 
-    room = ChatRoom.query.filter_by(event_id=event_id).first()
+    if not text and not media_url:
+        return jsonify({"msg": "text or media_url is required"}), 400
+    if media_url and media_type not in ("image", "audio"):
+        return jsonify({"msg": "media_type must be 'image' or 'audio' when media_url is set"}), 400
+
+    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
     if not room:
-        room = ChatRoom(event_id=event_id)
+        room = ChatRoom(type="event", event_id=event_id)
         db.session.add(room)
         db.session.flush()
 
-    msg = ChatMessage(room_id=room.id, sender_id=current_user_id, text=text)
+    msg = ChatMessage(
+        room_id=room.id,
+        sender_id=current_user_id,
+        text=text,
+        media_url=media_url,
+        media_type=media_type,
+    )
     db.session.add(msg)
 
-    # sender has obviously "read" their own message
     membership = _get_or_create_membership(room.id, current_user_id)
     membership.last_read_at = datetime.utcnow()
 
@@ -993,9 +1292,6 @@ def post_event_message(event_id):
 # NOTIFICATIONS
 # =========================================================
 
-# ---------- LIST MY NOTIFICATIONS ----------
-# Optional query params:
-#   ?only_unread=1  -> filter to unread only
 @api.route('/notifications', methods=['GET'])
 @jwt_required()
 def list_notifications():
@@ -1009,7 +1305,6 @@ def list_notifications():
     return jsonify([n.serialize() for n in notifs]), 200
 
 
-# ---------- UNREAD COUNT (for the bell badge) ----------
 @api.route('/notifications/unread-count', methods=['GET'])
 @jwt_required()
 def notifications_unread_count():
@@ -1020,7 +1315,6 @@ def notifications_unread_count():
     return jsonify({"unread_count": count}), 200
 
 
-# ---------- MARK ONE AS READ ----------
 @api.route('/notifications/<int:notif_id>/read', methods=['PUT'])
 @jwt_required()
 def mark_notification_read(notif_id):
@@ -1036,7 +1330,6 @@ def mark_notification_read(notif_id):
     return jsonify({"msg": "Notification marked as read", "notification": n.serialize()}), 200
 
 
-# ---------- MARK ALL AS READ ----------
 @api.route('/notifications/read-all', methods=['PUT'])
 @jwt_required()
 def mark_all_notifications_read():
@@ -1050,7 +1343,6 @@ def mark_all_notifications_read():
     return jsonify({"msg": "All notifications marked as read", "count": len(notifs)}), 200
 
 
-# ---------- DELETE A NOTIFICATION ----------
 @api.route('/notifications/<int:notif_id>', methods=['DELETE'])
 @jwt_required()
 def delete_notification(notif_id):

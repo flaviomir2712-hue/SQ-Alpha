@@ -1,14 +1,26 @@
 // src/front/hooks/useNotifications.jsx
-import { useCallback, useEffect, useRef } from "react";
+//
+// Centralises every notification-related side-effect: fetch list, fetch
+// unread count, mark one/all as read, delete. Also exposes a `start()`
+// helper that kicks an interval-based polling loop so the bell stays
+// up-to-date while the user navigates.
+//
+// The hook reads from / writes to the global reducer so all components
+// (NotificationBell, future modals, etc.) see the same data.
+
+import { useEffect, useRef } from "react";
 import useGlobalReducer from "./useGlobalReducer.jsx";
 
-const API = import.meta.env.VITE_BACKEND_URL;
+const API_URL = import.meta.env.VITE_BACKEND_URL;
+const POLL_MS = 20000; // 20s — coherent with the chat-rooms polling cadence
 
 const authHeaders = () => ({
     "Content-Type": "application/json",
     Authorization: `Bearer ${localStorage.getItem("token")}`,
 });
 
+// Retry exponentiel jusqu'a obtenir une vraie reponse HTTP. Absorbe les
+// "Failed to fetch" du cold-start backend sans rien afficher a l'utilisateur.
 const fetchWithRetry = async (url, options = {}) => {
     let delay = 400;
     for (;;) {
@@ -22,126 +34,85 @@ const fetchWithRetry = async (url, options = {}) => {
     }
 };
 
-const handle = async (res) => {
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-    return data;
-};
-
-export const useNotifications = ({ pollMs = 20000 } = {}) => {
+export const useNotifications = ({ poll = false } = {}) => {
     const { store, dispatch } = useGlobalReducer();
-    const pollRef = useRef(null);
+    const intervalRef = useRef(null);
 
-    const isLogged = !!localStorage.getItem("token");
+    const fetchNotifications = async () => {
+        const token = localStorage.getItem("token");
+        if (!token) return;
+        const res = await fetchWithRetry(`${API_URL}/api/notifications`, {
+            headers: authHeaders(),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        dispatch({ type: "set_notifications", payload: data });
+    };
 
-    // ----- fetch list -----
-    const fetchNotifications = useCallback(async () => {
-        if (!localStorage.getItem("token")) return;
-        try {
-            const res = await fetchWithRetry(`${API}/api/notifications`, {
-                headers: authHeaders(),
-            });
-            if (!res.ok) return;
-            const data = await res.json();
-            dispatch({ type: "set_notifications", payload: data });
-        } catch (e) {
-            console.error("notifications: fetch failed", e);
-        }
-    }, [dispatch]);
+    const fetchUnreadCount = async () => {
+        const token = localStorage.getItem("token");
+        if (!token) return;
+        const res = await fetchWithRetry(`${API_URL}/api/notifications/unread-count`, {
+            headers: authHeaders(),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        dispatch({ type: "set_unread_notifs_count", payload: data.unread_count });
+    };
 
-    // ----- mark one as read -----
-    const markAsRead = useCallback(
-        async (id) => {
-            try {
-                await fetchWithRetry(`${API}/api/notifications/${id}/read`, {
-                    method: "PUT",
-                    headers: authHeaders(),
-                });
-                dispatch({ type: "mark_notification_read", payload: id });
-            } catch (e) {
-                console.error("notifications: markAsRead failed", e);
-            }
-        },
-        [dispatch]
-    );
+    const markAsRead = async (id) => {
+        const res = await fetchWithRetry(`${API_URL}/api/notifications/${id}/read`, {
+            method: "PUT",
+            headers: authHeaders(),
+        });
+        if (res.ok) dispatch({ type: "mark_notification_read", payload: id });
+    };
 
-    // ----- mark all as read -----
-    const markAllAsRead = useCallback(async () => {
-        try {
-            await fetchWithRetry(`${API}/api/notifications/read-all`, {
-                method: "PUT",
-                headers: authHeaders(),
-            });
-            dispatch({ type: "mark_all_notifications_read" });
-        } catch (e) {
-            console.error("notifications: markAllAsRead failed", e);
-        }
-    }, [dispatch]);
+    const markAllRead = async () => {
+        const res = await fetchWithRetry(`${API_URL}/api/notifications/read-all`, {
+            method: "PUT",
+            headers: authHeaders(),
+        });
+        if (res.ok) dispatch({ type: "mark_all_notifications_read" });
+    };
 
-    // ----- delete (after handling accept/deny) -----
-    const removeNotification = useCallback(
-        async (id) => {
-            try {
-                await fetchWithRetry(`${API}/api/notifications/${id}`, {
-                    method: "DELETE",
-                    headers: authHeaders(),
-                });
-                dispatch({ type: "remove_notification", payload: id });
-            } catch (e) {
-                console.error("notifications: removeNotification failed", e);
-            }
-        },
-        [dispatch]
-    );
+    const deleteNotification = async (id) => {
+        const res = await fetchWithRetry(`${API_URL}/api/notifications/${id}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+        });
+        if (res.ok) dispatch({ type: "remove_notification", payload: id });
+    };
 
-    // ----- friend request actions -----
-    const acceptFriendRequest = useCallback(async (friendshipId) => {
-        const res = await fetchWithRetry(
-            `${API}/api/friends/requests/${friendshipId}/accept`,
-            { method: "PUT", headers: authHeaders() }
-        );
-        return handle(res);
-    }, []);
-
-    const refuseFriendRequest = useCallback(async (friendshipId) => {
-        const res = await fetchWithRetry(
-            `${API}/api/friends/requests/${friendshipId}/refuse`,
-            { method: "PUT", headers: authHeaders() }
-        );
-        return handle(res);
-    }, []);
-
-    // ----- event invite actions -----
-    // Accept = nothing to do server-side (creator already added you to participants).
-    // Deny   = leave the event (DELETE my participant entry).
-    const leaveEvent = useCallback(async (eventId, myUserId) => {
-        const res = await fetchWithRetry(
-            `${API}/api/events/${eventId}/participants/${myUserId}`,
-            { method: "DELETE", headers: authHeaders() }
-        );
-        return handle(res);
-    }, []);
-
-    // ----- polling -----
+    // Optional polling — opt-in via { poll: true }. Used by NotificationBell so
+    // a single mounted bell keeps the global count fresh; other consumers can
+    // omit it and just call fetchNotifications() on demand.
     useEffect(() => {
-        if (!isLogged) return;
+        if (!poll) return;
+        const token = localStorage.getItem("token");
+        if (!token) return;
+
+        // initial load
         fetchNotifications();
-        pollRef.current = setInterval(fetchNotifications, pollMs);
+
+        intervalRef.current = setInterval(() => {
+            fetchNotifications();
+        }, POLL_MS);
+
         return () => {
-            if (pollRef.current) clearInterval(pollRef.current);
+            if (intervalRef.current) clearInterval(intervalRef.current);
         };
-    }, [isLogged, pollMs, fetchNotifications]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [poll]);
 
     return {
-        notifications: store.notifications || [],
-        unreadCount:   store.unreadNotifsCount || 0,
+        notifications:     store.notifications || [],
+        unreadCount:       store.unreadNotifsCount || 0,
         fetchNotifications,
+        fetchUnreadCount,
         markAsRead,
-        markAllAsRead,
-        removeNotification,
-        acceptFriendRequest,
-        refuseFriendRequest,
-        leaveEvent,
+        markAllRead,
+        deleteNotification,
     };
 };
 

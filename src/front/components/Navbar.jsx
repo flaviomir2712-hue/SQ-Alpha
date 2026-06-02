@@ -24,6 +24,14 @@ import {
     FiLogOut,
     FiCalendar,
     FiArrowLeft,
+    FiSearch,
+    FiImage,
+    FiMic,
+    FiSquare,
+    FiUser,
+    FiEdit2,
+    FiCheck,
+    FiX,
 } from "react-icons/fi";
 
 // =====================================================
@@ -31,13 +39,15 @@ import {
 // =====================================================
 const API = import.meta.env.VITE_BACKEND_URL;
 
+// Same window the backend enforces (15 min). Keeping it identical
+// avoids showing an Edit button that would 409 server-side.
+const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
+
 const authHeaders = () => ({
     "Content-Type": "application/json",
     Authorization: `Bearer ${localStorage.getItem("token")}`,
 });
 
-// Retry exponentiel jusqu'a obtenir une vraie reponse HTTP. Absorbe les
-// "Failed to fetch" du cold-start backend sans rien afficher a l'utilisateur.
 const fetchWithRetry = async (url, options = {}) => {
     let delay = 400;
     for (;;) {
@@ -58,23 +68,39 @@ const getChatRooms = async (dispatch) => {
     dispatch({ type: "set_chat_rooms", payload: rooms });
 };
 
-const getEventMessages = async (eventId) => {
-    const res = await fetchWithRetry(`${API}/api/events/${eventId}/chat/messages`, {
+const getRoomMessages = async (roomId) => {
+    const res = await fetchWithRetry(`${API}/api/chat/rooms/${roomId}/messages`, {
         headers: authHeaders(),
     });
     if (!res.ok) return { messages: [] };
     return res.json();
 };
 
-const sendEventMessage = async (eventId, text) => {
-    const res = await fetchWithRetry(`${API}/api/events/${eventId}/chat/messages`, {
+const sendRoomMessage = async (roomId, payload) => {
+    const res = await fetchWithRetry(`${API}/api/chat/rooms/${roomId}/messages`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(payload),
     });
     if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.msg || "Failed to send message");
+    }
+    return res.json();
+};
+
+const editRoomMessage = async (roomId, msgId, newText) => {
+    const res = await fetchWithRetry(
+        `${API}/api/chat/rooms/${roomId}/messages/${msgId}`,
+        {
+            method: "PUT",
+            headers: authHeaders(),
+            body: JSON.stringify({ text: newText }),
+        }
+    );
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.msg || "Failed to edit message");
     }
     return res.json();
 };
@@ -90,6 +116,36 @@ const markRoomRead = async (roomId) => {
     }
 };
 
+const searchChats = async (q) => {
+    const res = await fetchWithRetry(
+        `${API}/api/chat/search?q=${encodeURIComponent(q)}`,
+        { headers: authHeaders() }
+    );
+    if (!res.ok) return { event_rooms: [], friends: [] };
+    return res.json();
+};
+
+const createOrGetDm = async (userId) => {
+    const res = await fetchWithRetry(`${API}/api/chat/dm`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ user_id: userId }),
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.msg || "Failed to start DM");
+    }
+    return res.json();
+};
+
+const fileToDataURL = (fileOrBlob) =>
+    new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(fileOrBlob);
+    });
+
 // =====================================================
 // STYLES (dark, coherent avec EventModal / Profile)
 // =====================================================
@@ -104,7 +160,7 @@ const NAVBAR_CSS = `
 .sq-chat-modal .modal-header,
 .sq-chat-modal .modal-footer { border-color: #262a36; }
 
-/* Carte de chat : style mini-event-card */
+/* Carte de chat */
 .sq-chat-card {
   display: flex; align-items: center; gap: 0.75rem;
   background: #0f111a; border: 1px solid #262a36;
@@ -120,7 +176,6 @@ const NAVBAR_CSS = `
 }
 .sq-chat-card.has-unread { border-color: #6366f1; }
 
-/* Avatar carre arrondi avec image de l'event (ou fallback gradient) */
 .sq-chat-avatar {
   width: 56px; height: 56px; border-radius: 12px;
   object-fit: cover; background: #1e2230; flex-shrink: 0;
@@ -132,6 +187,10 @@ const NAVBAR_CSS = `
   display: flex; align-items: center; justify-content: center; color: #fff;
   border: 1px solid #262a36;
 }
+.sq-chat-avatar-fallback.dm {
+  background: linear-gradient(135deg, #ec4899, #f97316);
+}
+
 .sq-chat-card-body { flex: 1; min-width: 0; }
 .sq-chat-card-row {
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
@@ -140,6 +199,7 @@ const NAVBAR_CSS = `
   font-weight: 700; color: #fff; font-size: 1rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 0.4rem;
 }
 .sq-chat-card-time {
   font-size: 0.72rem; color: #6c757d; flex-shrink: 0;
@@ -153,7 +213,17 @@ const NAVBAR_CSS = `
   font-size: 0.8rem; color: #6c757d; font-style: italic;
   margin-top: 0.15rem;
 }
-.sq-chat-card-badge {
+.sq-chat-type-badge {
+  background: #1e2230; color: #adb5bd;
+  border: 1px solid #262a36;
+  font-size: 0.6rem; font-weight: 700;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.sq-chat-card-unread {
   background: #ef4444; color: #fff;
   font-size: 0.68rem; font-weight: 700;
   border-radius: 999px;
@@ -162,22 +232,103 @@ const NAVBAR_CSS = `
   flex-shrink: 0;
 }
 
-/* Thread inline */
+/* Search */
+.sq-chat-search-input {
+  background: #0f111a !important; color: #e9ecef !important;
+  border: 1px solid #262a36 !important;
+}
+.sq-chat-search-input::placeholder { color: #6c757d; }
+.sq-chat-search-input:focus {
+  border-color: #6366f1 !important;
+  box-shadow: 0 0 0 0.15rem rgba(99,102,241,0.25) !important;
+}
+.sq-chat-search-prefix {
+  background: #0f111a; border: 1px solid #262a36; border-right: 0;
+  color: #adb5bd;
+}
+.sq-chat-section-title {
+  color: #adb5bd; text-transform: uppercase;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em;
+  margin: 0.75rem 0 0.4rem 0.1rem;
+}
+.sq-chat-empty-results {
+  color: #6c757d; font-size: 0.85rem; font-style: italic;
+  padding: 0.3rem 0.25rem 0.5rem;
+}
+
+/* Thread */
 .sq-chat-thread {
   background: #0f111a; border: 1px solid #262a36; border-radius: 12px;
-  height: 280px; overflow-y: auto; padding: 0.75rem;
+  height: 300px; overflow-y: auto; padding: 0.75rem;
 }
-.sq-chat-msg { margin-bottom: 0.6rem; }
+.sq-chat-msg { margin-bottom: 0.6rem; position: relative; }
 .sq-chat-msg .bubble {
   display: inline-block; padding: 0.4rem 0.7rem;
   border-radius: 10px; max-width: 80%;
   background: #1e2230; color: #e9ecef;
+  text-align: left;
 }
 .sq-chat-msg.mine { text-align: right; }
 .sq-chat-msg.mine .bubble {
   background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff;
 }
 .sq-chat-msg .meta { font-size: 0.72rem; color: #6c757d; }
+.sq-chat-msg .meta-edited {
+  font-size: 0.68rem; color: #6c757d; font-style: italic;
+  margin-left: 0.3rem;
+}
+.sq-chat-msg .sq-chat-img {
+  display: block; max-width: 220px; max-height: 220px;
+  border-radius: 8px; object-fit: cover;
+}
+.sq-chat-msg .sq-chat-audio { display: block; max-width: 240px; }
+.sq-chat-edit-btn {
+  background: transparent !important; border: none !important;
+  color: #adb5bd !important;
+  font-size: 0.7rem !important;
+  padding: 0 0.25rem !important;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+}
+.sq-chat-edit-btn:hover { color: #fff !important; }
+.sq-chat-edit-form {
+  display: inline-flex; gap: 0.3rem; align-items: center;
+  max-width: 90%;
+}
+.sq-chat-edit-input {
+  background: #0f111a !important; color: #e9ecef !important;
+  border: 1px solid #6366f1 !important;
+  font-size: 0.85rem !important;
+  padding: 0.3rem 0.5rem !important;
+  min-width: 180px;
+}
+.sq-chat-edit-input:focus {
+  box-shadow: 0 0 0 0.15rem rgba(99,102,241,0.25) !important;
+}
+.sq-chat-edit-save {
+  background: #4f46e5 !important; border: none !important; color: #fff !important;
+  font-size: 0.78rem !important; padding: 0.25rem 0.45rem !important;
+}
+.sq-chat-edit-cancel {
+  background: #1e2230 !important; border: 1px solid #262a36 !important; color: #adb5bd !important;
+  font-size: 0.78rem !important; padding: 0.25rem 0.45rem !important;
+}
+
+/* Media buttons */
+.sq-chat-media-btn {
+  background: #1e2230 !important; color: #adb5bd !important;
+  border: 1px solid #262a36 !important;
+}
+.sq-chat-media-btn:hover { background: #262a36 !important; color: #fff !important; }
+.sq-chat-media-btn.recording {
+  background: #ef4444 !important; color: #fff !important;
+  border-color: #ef4444 !important;
+  animation: sq-pulse 1s ease-in-out infinite;
+}
+@keyframes sq-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); }
+  50%      { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+}
 
 /* Hamburger dropdown */
 .sq-menu-toggle.dropdown-toggle::after { display: none; }
@@ -200,6 +351,7 @@ const NAVBAR_CSS = `
 
 @media (max-width: 575.98px) {
   .sq-navbar .navbar-brand { font-size: 1.5rem; }
+  .sq-hide-xs { display: none !important; }
 }
 `;
 
@@ -207,12 +359,26 @@ const NAVBAR_CSS = `
 // HELPERS
 // =====================================================
 const getChatLabel = (room, currentUserId) => {
-    if (room?.event_title) return room.event_title;
-    const friend = room?.participants?.find((p) => p.id !== currentUserId);
-    return friend ? friend.email : "Chat";
+    if (room?.type === "event") {
+        return room.event_title || "Chat de evento";
+    }
+    if (room?.type === "dm") {
+        const p = room.dm_partner;
+        if (p) return p.username || p.email || "Chat";
+        const other = room?.participants?.find((u) => u.id !== currentUserId);
+        return other?.email || "Chat";
+    }
+    return room?.event_title || "Chat";
 };
 
-// Format heure court (HH:MM aujourd'hui, sinon DD/MM)
+const getPreviewText = (last) => {
+    if (!last) return null;
+    if (last.text) return last.text;
+    if (last.media_type === "image") return "📷 Foto";
+    if (last.media_type === "audio") return "🎤 Audio";
+    return null;
+};
+
 const formatPreviewTime = (iso) => {
     if (!iso) return "";
     const d = new Date(iso);
@@ -225,6 +391,16 @@ const formatPreviewTime = (iso) => {
     return sameDay
         ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
         : d.toLocaleDateString([], { day: "2-digit", month: "2-digit" });
+};
+
+// Can the current user edit this message right now?
+// Rules: must be the sender, must have text, must be within the 15-min window.
+const canEditMessage = (m, currentUserId) => {
+    if (m.sender_id !== currentUserId) return false;
+    if (!m.text) return false;
+    const created = new Date(m.created_at).getTime();
+    if (Number.isNaN(created)) return false;
+    return Date.now() - created < CHAT_EDIT_WINDOW_MS;
 };
 
 export const Navbar = () => {
@@ -241,14 +417,30 @@ export const Navbar = () => {
 
     const [showMessages, setShowMessages] = useState(false);
 
-    // selected chat inside the chat modal
+    // selected chat
     const [activeRoom, setActiveRoom] = useState(null);
     const [messages, setMessages]     = useState([]);
     const [replyText, setReplyText]   = useState("");
     const threadRef = useRef(null);
 
+    // edit-in-place
+    const [editingMsgId, setEditingMsgId] = useState(null);
+    const [editText, setEditText] = useState("");
+
+    // search
+    const [searchQ, setSearchQ] = useState("");
+    const [searchResults, setSearchResults] = useState(null);
+
+    // image input
+    const imageInputRef = useRef(null);
+
+    // audio recorder
+    const [isRecording, setIsRecording] = useState(false);
+    const mediaRecorderRef = useRef(null);
+    const audioChunksRef = useRef([]);
+
     // =====================================================
-    // REDIRECT : si pas loggue, on force /register (sauf si deja sur /login ou /register)
+    // REDIRECT
     // =====================================================
     useEffect(() => {
         if (!isLogged) {
@@ -261,7 +453,7 @@ export const Navbar = () => {
     }, [isLogged, location.pathname]);
 
     // =====================================================
-    // LOAD CHAT ROOMS + POLL for unread badge
+    // LOAD CHAT ROOMS + POLL (keeps the unread badge fresh)
     // =====================================================
     useEffect(() => {
         if (!isLogged) return;
@@ -271,19 +463,17 @@ export const Navbar = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isLogged]);
 
-    // refresh quand on ouvre le modal des chats
     useEffect(() => {
         if (showMessages && isLogged) getChatRooms(dispatch);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showMessages]);
 
-    // poll messages quand un chat est ouvert
+    // poll messages while a chat is open
     useEffect(() => {
         if (!activeRoom) return;
-
         let cancelled = false;
         const load = async () => {
-            const data = await getEventMessages(activeRoom.event_id);
+            const data = await getRoomMessages(activeRoom.id);
             if (!cancelled) setMessages(data.messages || []);
         };
         load();
@@ -298,6 +488,17 @@ export const Navbar = () => {
         }
     }, [messages]);
 
+    // debounced search
+    useEffect(() => {
+        const q = searchQ.trim();
+        if (!q) { setSearchResults(null); return; }
+        const handle = setTimeout(async () => {
+            const data = await searchChats(q);
+            setSearchResults(data);
+        }, 300);
+        return () => clearTimeout(handle);
+    }, [searchQ]);
+
     // =====================================================
     // LOGOUT
     // =====================================================
@@ -311,12 +512,15 @@ export const Navbar = () => {
     // =====================================================
     // CHAT HANDLERS
     // =====================================================
-    const openRoom = async (room) => {
+    const openRoom = (room) => {
         setActiveRoom(room);
         setMessages([]);
         setReplyText("");
+        setSearchQ("");
+        setSearchResults(null);
+        cancelEdit();
 
-        // Mark as read both server-side and locally so the badge decreases immediately.
+        // Mark as read both locally (instant badge update) and server-side.
         if (room?.id) {
             dispatch({ type: "mark_room_read_local", payload: room.id });
             markRoomRead(room.id);
@@ -327,32 +531,156 @@ export const Navbar = () => {
         setActiveRoom(null);
         setMessages([]);
         setReplyText("");
-        // refresh rooms list (counts + previews)
+        cancelEdit();
+        stopRecording(true);
+        // refresh rooms so previews/counts are up-to-date
         getChatRooms(dispatch);
+    };
+
+    const handleStartDm = async (userId) => {
+        try {
+            const data = await createOrGetDm(userId);
+            const room = data.room;
+            if (room) {
+                dispatch({ type: "upsert_chat_room", payload: room });
+                openRoom(room);
+            }
+        } catch (e) {
+            console.error("Error starting DM:", e);
+        }
     };
 
     const handleSendReply = async () => {
         if (!replyText.trim() || !activeRoom) return;
         try {
-            await sendEventMessage(activeRoom.event_id, replyText);
+            await sendRoomMessage(activeRoom.id, { text: replyText });
             setReplyText("");
-            const data = await getEventMessages(activeRoom.event_id);
+            const data = await getRoomMessages(activeRoom.id);
             setMessages(data.messages || []);
+            getChatRooms(dispatch);
         } catch (e) {
             console.error("Error sending message:", e);
+        }
+    };
+
+    const handlePickImage = () => {
+        if (imageInputRef.current) imageInputRef.current.click();
+    };
+
+    const handleImageChange = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (!file || !activeRoom) return;
+        try {
+            const dataUrl = await fileToDataURL(file);
+            await sendRoomMessage(activeRoom.id, {
+                media_url: dataUrl,
+                media_type: "image",
+            });
+            const data = await getRoomMessages(activeRoom.id);
+            setMessages(data.messages || []);
+            getChatRooms(dispatch);
+        } catch (err) {
+            console.error("Error sending image:", err);
+        }
+    };
+
+    const startRecording = async () => {
+        if (!navigator.mediaDevices?.getUserMedia) {
+            console.warn("Audio recording not supported in this browser");
+            return;
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const recorder = new MediaRecorder(stream);
+            audioChunksRef.current = [];
+            recorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+            };
+            recorder.onstop = async () => {
+                stream.getTracks().forEach((t) => t.stop());
+                if (audioChunksRef.current.length === 0) return;
+                const blob = new Blob(audioChunksRef.current, {
+                    type: recorder.mimeType || "audio/webm",
+                });
+                audioChunksRef.current = [];
+                if (!activeRoom) return;
+                try {
+                    const dataUrl = await fileToDataURL(blob);
+                    await sendRoomMessage(activeRoom.id, {
+                        media_url: dataUrl,
+                        media_type: "audio",
+                    });
+                    const data = await getRoomMessages(activeRoom.id);
+                    setMessages(data.messages || []);
+                    getChatRooms(dispatch);
+                } catch (err) {
+                    console.error("Error sending audio:", err);
+                }
+            };
+            mediaRecorderRef.current = recorder;
+            recorder.start();
+            setIsRecording(true);
+        } catch (err) {
+            console.error("Microphone access denied:", err);
+        }
+    };
+
+    const stopRecording = (cancel = false) => {
+        const rec = mediaRecorderRef.current;
+        if (!rec) return;
+        if (cancel) audioChunksRef.current = [];
+        if (rec.state !== "inactive") {
+            try { rec.stop(); } catch (_) { /* ignore */ }
+        }
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+    };
+
+    const toggleRecording = () => {
+        if (isRecording) stopRecording(false);
+        else startRecording();
+    };
+
+    // ----- edit handlers -----
+    const beginEdit = (m) => {
+        setEditingMsgId(m.id);
+        setEditText(m.text || "");
+    };
+
+    const cancelEdit = () => {
+        setEditingMsgId(null);
+        setEditText("");
+    };
+
+    const saveEdit = async () => {
+        if (!activeRoom || !editingMsgId) return;
+        const trimmed = editText.trim();
+        if (!trimmed) return;
+        try {
+            await editRoomMessage(activeRoom.id, editingMsgId, trimmed);
+            cancelEdit();
+            const data = await getRoomMessages(activeRoom.id);
+            setMessages(data.messages || []);
+            getChatRooms(dispatch);
+        } catch (e) {
+            console.error("Error editing message:", e);
+            cancelEdit();
         }
     };
 
     const closeChatModal = () => {
         setShowMessages(false);
         backToList();
+        setSearchQ("");
+        setSearchResults(null);
     };
 
     // =====================================================
     // RENDER
     // =====================================================
-    // Counter shows number of UNREAD messages, not number of chat rooms.
     const chatUnread = store.chatUnreadTotal || 0;
+    const showingSearch = searchResults !== null;
 
     return (
         <>
@@ -364,15 +692,15 @@ export const Navbar = () => {
                     <Link to="/" className="text-decoration-none">
                         <NavbarBs.Brand className="fw-bold fs-3 mb-0">
                             <img src="src/front/assets/img/logoSideQuest.png" alt="SideQuest" style={{ filter: "brightness(0) invert(1)", height: "40px", width:"auto" }} />
-
                         </NavbarBs.Brand>
                     </Link>
 
                     <Nav className="d-flex flex-row align-items-center gap-2 gap-md-3">
                         {isLogged ? (
                             <>
-                                {/* Notification bell : visible on mobile too */}
-                                <NotificationBell />
+                                <span className="sq-hide-xs">
+                                    <NotificationBell />
+                                </span>
 
                                 <Button
                                     variant="dark"
@@ -428,7 +756,6 @@ export const Navbar = () => {
                                 </Dropdown>
                             </>
                         ) : (
-                            // ─── NON LOGUE : juste Ingresar / Registro ───
                             <>
                                 <Link to="/login">
                                     <Button variant="primary" size="sm" className="me-1">
@@ -446,9 +773,7 @@ export const Navbar = () => {
                 </Container>
             </NavbarBs>
 
-            {/* =====================================================
-                CHAT MODAL : liste des chats d'events + thread inline
-            ===================================================== */}
+            {/* ===== CHAT MODAL ===== */}
             <Modal
                 show={showMessages}
                 onHide={closeChatModal}
@@ -474,72 +799,79 @@ export const Navbar = () => {
                 </Modal.Header>
 
                 <Modal.Body>
-                    {!activeRoom && (!store.chatRooms || store.chatRooms.length === 0) && (
-                        <p className="text-muted mb-0">
-                            No tienes chats activos. Crea o unete a un evento para empezar.
-                        </p>
-                    )}
+                    {!activeRoom && (
+                        <>
+                            <InputGroup className="mb-2">
+                                <InputGroup.Text className="sq-chat-search-prefix">
+                                    <FiSearch />
+                                </InputGroup.Text>
+                                <Form.Control
+                                    className="sq-chat-search-input"
+                                    placeholder="Busca un chat de evento o un amigo..."
+                                    value={searchQ}
+                                    onChange={(e) => setSearchQ(e.target.value)}
+                                />
+                            </InputGroup>
 
-                    {!activeRoom && store.chatRooms && store.chatRooms.length > 0 && (
-                        <ListGroup variant="flush">
-                            {store.chatRooms.map((room) => {
-                                const label = getChatLabel(room, currentUserId);
-                                const last = room.last_message;
-                                const unread = room.unread_count || 0;
-                                return (
-                                    <div
-                                        key={room.id}
-                                        className={`sq-chat-card ${unread > 0 ? "has-unread" : ""}`}
-                                        onClick={() => openRoom(room)}
-                                    >
-                                        {room.event_image ? (
-                                            <img
-                                                src={room.event_image}
-                                                alt={label}
-                                                className="sq-chat-avatar"
-                                                onError={(e) => {
-                                                    e.currentTarget.style.display = "none";
-                                                }}
-                                            />
-                                        ) : (
-                                            <div className="sq-chat-avatar-fallback">
-                                                <FiCalendar size={22} />
-                                            </div>
-                                        )}
-
-                                        <div className="sq-chat-card-body">
-                                            <div className="sq-chat-card-row">
-                                                <div className="sq-chat-card-title">
-                                                    {label}
-                                                </div>
-                                                {last && (
-                                                    <div className="sq-chat-card-time">
-                                                        {formatPreviewTime(last.created_at)}
-                                                    </div>
-                                                )}
-                                            </div>
-                                            {last ? (
-                                                <div className="sq-chat-card-row">
-                                                    <div className="sq-chat-card-preview" title={last.text}>
-                                                        {last.sender_id === currentUserId ? "Tu: " : ""}
-                                                        {last.text}
-                                                    </div>
-                                                    {unread > 0 && (
-                                                        <span className="sq-chat-card-badge">
-                                                            {unread > 99 ? "99+" : unread}
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            ) : (
-                                                <div className="sq-chat-card-empty">
-                                                    No messages yet
-                                                </div>
-                                            )}
-                                        </div>
+                            {showingSearch ? (
+                                <>
+                                    <div className="sq-chat-section-title">
+                                        Chats de eventos
                                     </div>
-                                );
-                            })}
-                        </ListGroup>
+                                    {searchResults.event_rooms.length === 0 ? (
+                                        <div className="sq-chat-empty-results">
+                                            Sin resultados
+                                        </div>
+                                    ) : (
+                                        searchResults.event_rooms.map((room) => (
+                                            <RoomCard
+                                                key={`er-${room.id}`}
+                                                room={room}
+                                                currentUserId={currentUserId}
+                                                onClick={() => openRoom(room)}
+                                            />
+                                        ))
+                                    )}
+
+                                    <div className="sq-chat-section-title">
+                                        Amigos
+                                    </div>
+                                    {searchResults.friends.length === 0 ? (
+                                        <div className="sq-chat-empty-results">
+                                            Sin resultados
+                                        </div>
+                                    ) : (
+                                        searchResults.friends.map((f) => (
+                                            <FriendCard
+                                                key={`fr-${f.user.id}`}
+                                                friend={f}
+                                                onOpen={openRoom}
+                                                onStartDm={handleStartDm}
+                                            />
+                                        ))
+                                    )}
+                                </>
+                            ) : (
+                                <>
+                                    {(store.chatRooms || []).length === 0 ? (
+                                        <p className="text-muted mb-0">
+                                            No tienes chats activos. Crea/unete a un evento o busca un amigo para empezar.
+                                        </p>
+                                    ) : (
+                                        <ListGroup variant="flush">
+                                            {store.chatRooms.map((room) => (
+                                                <RoomCard
+                                                    key={room.id}
+                                                    room={room}
+                                                    currentUserId={currentUserId}
+                                                    onClick={() => openRoom(room)}
+                                                />
+                                            ))}
+                                        </ListGroup>
+                                    )}
+                                </>
+                            )}
+                        </>
                     )}
 
                     {activeRoom && (
@@ -552,6 +884,10 @@ export const Navbar = () => {
                                 ) : (
                                     messages.map((m) => {
                                         const mine = m.sender_id === currentUserId;
+                                        const isEditing = editingMsgId === m.id;
+                                        const hasImage = m.media_type === "image" && m.media_url;
+                                        const hasAudio = m.media_type === "audio" && m.media_url;
+                                        const showEditBtn = canEditMessage(m, currentUserId) && !isEditing;
                                         return (
                                             <div
                                                 key={m.id}
@@ -562,9 +898,69 @@ export const Navbar = () => {
                                                         {m.sender_email}
                                                     </div>
                                                 )}
-                                                <div className="bubble">{m.text}</div>
+
+                                                {isEditing ? (
+                                                    <div className="sq-chat-edit-form">
+                                                        <Form.Control
+                                                            className="sq-chat-edit-input"
+                                                            value={editText}
+                                                            onChange={(e) => setEditText(e.target.value)}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === "Enter") saveEdit();
+                                                                if (e.key === "Escape") cancelEdit();
+                                                            }}
+                                                            autoFocus
+                                                        />
+                                                        <Button
+                                                            className="sq-chat-edit-save"
+                                                            onClick={saveEdit}
+                                                            disabled={!editText.trim()}
+                                                            title="Guardar"
+                                                        >
+                                                            <FiCheck />
+                                                        </Button>
+                                                        <Button
+                                                            className="sq-chat-edit-cancel"
+                                                            onClick={cancelEdit}
+                                                            title="Cancelar"
+                                                        >
+                                                            <FiX />
+                                                        </Button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="bubble">
+                                                        {hasImage && (
+                                                            <img
+                                                                src={m.media_url}
+                                                                alt="foto"
+                                                                className="sq-chat-img"
+                                                            />
+                                                        )}
+                                                        {hasAudio && (
+                                                            <audio
+                                                                controls
+                                                                src={m.media_url}
+                                                                className="sq-chat-audio"
+                                                            />
+                                                        )}
+                                                        {m.text && <div>{m.text}</div>}
+                                                    </div>
+                                                )}
+
                                                 <div className="meta">
                                                     {new Date(m.created_at).toLocaleString()}
+                                                    {m.edited_at && (
+                                                        <span className="meta-edited">(editado)</span>
+                                                    )}
+                                                    {showEditBtn && (
+                                                        <Button
+                                                            className="sq-chat-edit-btn"
+                                                            onClick={() => beginEdit(m)}
+                                                            title="Editar (15 min)"
+                                                        >
+                                                            <FiEdit2 />
+                                                        </Button>
+                                                    )}
                                                 </div>
                                             </div>
                                         );
@@ -573,18 +969,53 @@ export const Navbar = () => {
                             </div>
 
                             <InputGroup className="mt-3">
+                                <Button
+                                    className="sq-chat-media-btn"
+                                    onClick={handlePickImage}
+                                    title="Enviar foto"
+                                    disabled={isRecording || !!editingMsgId}
+                                >
+                                    <FiImage />
+                                </Button>
+                                <Button
+                                    className={`sq-chat-media-btn ${isRecording ? "recording" : ""}`}
+                                    onClick={toggleRecording}
+                                    title={isRecording ? "Detener y enviar audio" : "Grabar audio"}
+                                    disabled={!!editingMsgId}
+                                >
+                                    {isRecording ? <FiSquare /> : <FiMic />}
+                                </Button>
                                 <Form.Control
-                                    placeholder="Escribe un mensaje..."
+                                    placeholder={
+                                        isRecording
+                                            ? "Grabando audio..."
+                                            : editingMsgId
+                                            ? "Editando un mensaje..."
+                                            : "Escribe un mensaje..."
+                                    }
                                     value={replyText}
                                     onChange={(e) => setReplyText(e.target.value)}
                                     onKeyDown={(e) => {
                                         if (e.key === "Enter") handleSendReply();
                                     }}
+                                    disabled={isRecording || !!editingMsgId}
                                 />
-                                <Button variant="primary" onClick={handleSendReply}>
+                                <Button
+                                    variant="primary"
+                                    onClick={handleSendReply}
+                                    disabled={isRecording || !!editingMsgId || !replyText.trim()}
+                                >
                                     <FiSend />
                                 </Button>
                             </InputGroup>
+
+                            <input
+                                ref={imageInputRef}
+                                type="file"
+                                accept="image/*"
+                                style={{ display: "none" }}
+                                onChange={handleImageChange}
+                            />
                         </>
                     )}
                 </Modal.Body>
@@ -596,5 +1027,117 @@ export const Navbar = () => {
                 </Modal.Footer>
             </Modal>
         </>
+    );
+};
+
+// =====================================================
+// Sub-components for rendering rooms & friend search hits
+// =====================================================
+const RoomCard = ({ room, currentUserId, onClick }) => {
+    const label = getChatLabel(room, currentUserId);
+    const last = room.last_message;
+    const preview = getPreviewText(last);
+    const isDm = room.type === "dm";
+    const unread = room.unread_count || 0;
+    const avatarUrl = isDm
+        ? room.dm_partner?.profile_picture_url
+        : room.event_image;
+
+    return (
+        <div
+            className={`sq-chat-card ${unread > 0 ? "has-unread" : ""}`}
+            onClick={onClick}
+        >
+            {avatarUrl ? (
+                <img
+                    src={avatarUrl}
+                    alt={label}
+                    className="sq-chat-avatar"
+                    onError={(e) => { e.currentTarget.style.display = "none"; }}
+                />
+            ) : (
+                <div className={`sq-chat-avatar-fallback ${isDm ? "dm" : ""}`}>
+                    {isDm ? <FiUser size={22} /> : <FiCalendar size={22} />}
+                </div>
+            )}
+
+            <div className="sq-chat-card-body">
+                <div className="sq-chat-card-row">
+                    <div className="sq-chat-card-title">
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {label}
+                        </span>
+                        <span className="sq-chat-type-badge">
+                            {isDm ? "DM" : "Evento"}
+                        </span>
+                    </div>
+                    {last && (
+                        <div className="sq-chat-card-time">
+                            {formatPreviewTime(last.created_at)}
+                        </div>
+                    )}
+                </div>
+                <div className="sq-chat-card-row">
+                    {preview ? (
+                        <div className="sq-chat-card-preview" title={preview}>
+                            {last.sender_id === currentUserId ? "Tu: " : ""}
+                            {preview}
+                        </div>
+                    ) : (
+                        <div className="sq-chat-card-empty">
+                            No messages yet
+                        </div>
+                    )}
+                    {unread > 0 && (
+                        <span className="sq-chat-card-unread">
+                            {unread > 99 ? "99+" : unread}
+                        </span>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const FriendCard = ({ friend, onOpen, onStartDm }) => {
+    const u = friend.user;
+    const label = u.username || u.email;
+    const room = friend.room;
+
+    const handleClick = () => {
+        if (room) onOpen(room);
+        else onStartDm(u.id);
+    };
+
+    return (
+        <div className="sq-chat-card" onClick={handleClick}>
+            {u.profile_picture_url ? (
+                <img
+                    src={u.profile_picture_url}
+                    alt={label}
+                    className="sq-chat-avatar"
+                    onError={(e) => { e.currentTarget.style.display = "none"; }}
+                />
+            ) : (
+                <div className="sq-chat-avatar-fallback dm">
+                    <FiUser size={22} />
+                </div>
+            )}
+            <div className="sq-chat-card-body">
+                <div className="sq-chat-card-row">
+                    <div className="sq-chat-card-title">
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {label}
+                        </span>
+                        <span className="sq-chat-type-badge">
+                            {room ? "Abrir DM" : "Nuevo DM"}
+                        </span>
+                    </div>
+                </div>
+                <div className="sq-chat-card-preview">
+                    {room ? "Conversacion existente" : "Iniciar conversacion 1 a 1"}
+                </div>
+            </div>
+        </div>
     );
 };

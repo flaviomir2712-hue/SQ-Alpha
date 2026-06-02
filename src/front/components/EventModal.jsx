@@ -25,13 +25,20 @@ import {
   FiMessageSquare,
   FiEdit2,
   FiSave,
-  FiXCircle,
+  FiMic,
+  FiSquare,
+  FiCheck,
+  FiX,
 } from "react-icons/fi";
 
 // =============================================================
 // INLINE API
 // =============================================================
 const API = import.meta.env.VITE_BACKEND_URL;
+
+// Same window the backend enforces (15 min). Keeping it identical
+// avoids showing an Edit button that would 409 server-side.
+const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 
 const authHeaders = () => ({
   "Content-Type": "application/json",
@@ -50,8 +57,19 @@ const apiUpdateEvent    = (id, body) => fetch(`${API}/api/events/${id}`,  { meth
 const apiDeleteEvent    = (id) => fetch(`${API}/api/events/${id}`,  { method: "DELETE", headers: authHeaders() }).then(handle);
 const apiInviteFriend   = (id, userId) => fetch(`${API}/api/events/${id}/invite`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ user_id: userId }) }).then(handle);
 const apiRemoveMember   = (id, userId) => fetch(`${API}/api/events/${id}/participants/${userId}`, { method: "DELETE", headers: authHeaders() }).then(handle);
+
+// Chat — legacy event-scoped endpoints (text + media supported server-side)
 const apiGetMessages    = (id) => fetch(`${API}/api/events/${id}/chat/messages`, { headers: authHeaders() }).then(handle);
-const apiPostMessage    = (id, text) => fetch(`${API}/api/events/${id}/chat/messages`, { method: "POST", headers: authHeaders(), body: JSON.stringify({ text }) }).then(handle);
+const apiPostMessage    = (id, body) => fetch(`${API}/api/events/${id}/chat/messages`, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
+
+// Chat — room-scoped endpoints (needed for edit + mark-read)
+const apiEditMessage    = (roomId, msgId, text) =>
+  fetch(`${API}/api/chat/rooms/${roomId}/messages/${msgId}`, {
+    method: "PUT", headers: authHeaders(), body: JSON.stringify({ text }),
+  }).then(handle);
+const apiMarkRoomRead   = (roomId) =>
+  fetch(`${API}/api/chat/rooms/${roomId}/read`, { method: "PUT", headers: authHeaders() }).then(handle);
+
 const apiListFriends    = () => fetch(`${API}/api/friends`, { headers: authHeaders() }).then(handle);
 
 // =============================================================
@@ -104,6 +122,8 @@ const EVENT_CSS = `
   display: flex; align-items: center; justify-content: center;
   color: #6c757d;
 }
+
+/* Chat box */
 .chat-box {
   background: #0f111a;
   border: 1px solid #262a36;
@@ -112,17 +132,77 @@ const EVENT_CSS = `
   overflow-y: auto;
   padding: 0.75rem;
 }
-.chat-msg { margin-bottom: 0.6rem; }
+.chat-msg { margin-bottom: 0.6rem; position: relative; }
 .chat-msg .bubble {
   display: inline-block; padding: 0.4rem 0.7rem;
   border-radius: 10px; max-width: 80%;
   background: #1e2230; color: #e9ecef;
+  text-align: left;
 }
 .chat-msg.mine { text-align: right; }
 .chat-msg.mine .bubble {
   background: linear-gradient(135deg, #6366f1, #4f46e5); color: #fff;
 }
 .chat-msg .meta { font-size: 0.72rem; color: #6c757d; }
+.chat-msg .meta-edited {
+  font-size: 0.68rem; color: #6c757d; font-style: italic;
+  margin-left: 0.3rem;
+}
+.chat-msg .chat-img {
+  display: block; max-width: 220px; max-height: 220px;
+  border-radius: 8px; object-fit: cover;
+}
+.chat-msg .chat-audio { display: block; max-width: 240px; }
+
+/* Edit-in-place */
+.chat-edit-btn {
+  background: transparent !important; border: none !important;
+  color: #adb5bd !important;
+  font-size: 0.7rem !important;
+  padding: 0 0.25rem !important;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+}
+.chat-edit-btn:hover { color: #fff !important; }
+.chat-edit-form {
+  display: inline-flex; gap: 0.3rem; align-items: center;
+  max-width: 90%;
+}
+.chat-edit-input {
+  background: #0f111a !important; color: #e9ecef !important;
+  border: 1px solid #6366f1 !important;
+  font-size: 0.85rem !important;
+  padding: 0.3rem 0.5rem !important;
+  min-width: 180px;
+}
+.chat-edit-input:focus {
+  box-shadow: 0 0 0 0.15rem rgba(99,102,241,0.25) !important;
+}
+.chat-edit-save {
+  background: #4f46e5 !important; border: none !important; color: #fff !important;
+  font-size: 0.78rem !important; padding: 0.25rem 0.45rem !important;
+}
+.chat-edit-cancel {
+  background: #1e2230 !important; border: 1px solid #262a36 !important; color: #adb5bd !important;
+  font-size: 0.78rem !important; padding: 0.25rem 0.45rem !important;
+}
+
+/* Media buttons */
+.chat-media-btn {
+  background: #1e2230 !important; color: #adb5bd !important;
+  border: 1px solid #262a36 !important;
+}
+.chat-media-btn:hover { background: #262a36 !important; color: #fff !important; }
+.chat-media-btn.recording {
+  background: #ef4444 !important; color: #fff !important;
+  border-color: #ef4444 !important;
+  animation: sq-pulse 1s ease-in-out infinite;
+}
+@keyframes sq-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); }
+  50%      { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+}
+
 .event-participant-row {
   background: transparent !important;
   border-color: #262a36 !important;
@@ -145,7 +225,7 @@ const avatarStyle = (seed) => ({
   fontWeight: 700, flexShrink: 0,
 });
 
-// convert a File to base64 data URL
+// convert a File / Blob to base64 data URL
 const fileToBase64 = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -153,6 +233,17 @@ const fileToBase64 = (file) =>
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+
+// Can the current user edit this chat message right now?
+// Sender + has text + within the 15-min window.
+const canEditChatMessage = (m, currentUserId) => {
+  if (!currentUserId) return false;
+  if (m.sender_id !== currentUserId) return false;
+  if (!m.text) return false;
+  const t = new Date(m.created_at).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t < CHAT_EDIT_WINDOW_MS;
+};
 
 // reverse geocode lat/lng via Nominatim (no API key)
 const reverseGeocode = async (lat, lng) => {
@@ -178,7 +269,7 @@ const reverseGeocode = async (lat, lng) => {
 //     prefillCoords     -> { latitude, longitude } when opening from a map click
 //     currentUser       -> { id, email } of the logged user (from localStorage)
 //     onSaved           -> callback after create/update (refresh map etc.)
-//     onDeleted         -> callback after cancellation (refresh map/event list)
+//     onDeleted         -> not used yet
 export const EventModal = ({
   show,
   onHide,
@@ -203,22 +294,33 @@ export const EventModal = ({
     longitude: null,
   });
 
-  const [eventData, setEventData] = useState(null); // hydrated server response
+  const [eventData, setEventData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving]   = useState(false);
-  const [cancelling, setCancelling] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError]     = useState(null);
   const [toast, setToast]     = useState(null);
-  const [confirmCancel, setConfirmCancel] = useState(false);
 
   // --- friends + invitations ---
   const [friends, setFriends] = useState([]);
-  const [invitedIds, setInvitedIds] = useState([]); // create mode only
+  const [invitedIds, setInvitedIds] = useState([]);
 
   // --- chat ---
   const [messages, setMessages] = useState([]);
   const [chatText, setChatText] = useState("");
   const chatBoxRef = useRef(null);
+
+  // chat: edit-in-place
+  const [editingMsgId, setEditingMsgId] = useState(null);
+  const [editText, setEditText] = useState("");
+
+  // chat: image input
+  const chatImageInputRef = useRef(null);
+
+  // chat: audio recorder
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
   const fileInputRef = useRef(null);
 
@@ -228,21 +330,19 @@ export const EventModal = ({
   useEffect(() => {
     if (!show) return;
 
-    // reset
     setTab("details");
     setError(null);
     setToast(null);
     setInvitedIds([]);
     setMessages([]);
-    setConfirmCancel(false);
+    cancelEdit();
+    stopRecording(true);
 
-    // load friends list (used by both create and edit)
     apiListFriends().then(setFriends).catch(() => setFriends([]));
 
     if (isEditMode) {
       hydrate();
     } else {
-      // create mode — reset form, apply prefill if any
       setForm({
         title:     "",
         date:      "",
@@ -279,7 +379,6 @@ export const EventModal = ({
         latitude:  data.latitude,
         longitude: data.longitude,
       });
-      // load messages
       const m = await apiGetMessages(eventId);
       setMessages(m.messages || []);
     } catch (e) {
@@ -294,6 +393,15 @@ export const EventModal = ({
       chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight;
     }
   }, [tab, messages]);
+
+  // Mark the room as read when the chat tab is opened, so the navbar
+  // unread badge drops immediately.
+  useEffect(() => {
+    if (tab !== "chat") return;
+    const rid = eventData?.chat_room_id;
+    if (!rid) return;
+    apiMarkRoomRead(rid).catch(() => {});
+  }, [tab, eventData?.chat_room_id]);
 
   // poll chat every 4s while the chat tab is open
   useEffect(() => {
@@ -330,7 +438,6 @@ export const EventModal = ({
       const b64 = await fileToBase64(file);
       setForm((f) => ({ ...f, image: b64 }));
       if (isEditMode) {
-        // persist immediately
         const data = await apiUpdateEvent(eventId, { image: b64 });
         setEventData(data.event);
         showToast("Photo updated");
@@ -413,36 +520,149 @@ export const EventModal = ({
     }
   };
 
-  // ─── CANCEL EVENT (creator only) ───
-  // Removes the event from the database (backend DELETE), drops its
-  // chat room, participants and related notifications. The parent
-  // (EventsList / Map) refreshes via onDeleted so the card disappears.
-  const handleCancelEvent = async () => {
+  const handleDelete = async () => {
     if (!isEditMode) return;
-    setCancelling(true);
+    const ok = window.confirm(
+      "Delete this event? This will also remove its chat and all participants. This cannot be undone."
+    );
+    if (!ok) return;
+    setDeleting(true);
     setError(null);
     try {
       await apiDeleteEvent(eventId);
-      setConfirmCancel(false);
       onDeleted(eventId);
       onHide();
     } catch (e) {
       setError(e.message);
     } finally {
-      setCancelling(false);
+      setDeleting(false);
     }
   };
 
+  // ----- chat: send text -----
   const handleSendMessage = async () => {
     const text = chatText.trim();
     if (!text) return;
     try {
-      await apiPostMessage(eventId, text);
+      await apiPostMessage(eventId, { text });
       setChatText("");
       const m = await apiGetMessages(eventId);
       setMessages(m.messages || []);
     } catch (e) {
       showToast(e.message, "danger");
+    }
+  };
+
+  // ----- chat: send image -----
+  const handlePickChatImage = () => {
+    if (chatImageInputRef.current) chatImageInputRef.current.click();
+  };
+
+  const handleChatImageChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 1.5 * 1024 * 1024) {
+      showToast("Image too large (max 1.5 MB)", "danger");
+      return;
+    }
+    try {
+      const dataUrl = await fileToBase64(file);
+      await apiPostMessage(eventId, {
+        media_url: dataUrl,
+        media_type: "image",
+      });
+      const m = await apiGetMessages(eventId);
+      setMessages(m.messages || []);
+    } catch (err) {
+      showToast(err.message || "Failed to send image", "danger");
+    }
+  };
+
+  // ----- chat: record + send audio -----
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast("Audio recording not supported in this browser", "danger");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        if (audioChunksRef.current.length === 0) return;
+        const blob = new Blob(audioChunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        audioChunksRef.current = [];
+        try {
+          const dataUrl = await fileToBase64(blob);
+          await apiPostMessage(eventId, {
+            media_url: dataUrl,
+            media_type: "audio",
+          });
+          const m = await apiGetMessages(eventId);
+          setMessages(m.messages || []);
+        } catch (err) {
+          showToast(err.message || "Failed to send audio", "danger");
+        }
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      showToast("Microphone access denied", "danger");
+    }
+  };
+
+  const stopRecording = (cancel = false) => {
+    const rec = mediaRecorderRef.current;
+    if (!rec) return;
+    if (cancel) audioChunksRef.current = [];
+    if (rec.state !== "inactive") {
+      try { rec.stop(); } catch (_) { /* ignore */ }
+    }
+    mediaRecorderRef.current = null;
+    setIsRecording(false);
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) stopRecording(false);
+    else startRecording();
+  };
+
+  // ----- chat: edit -----
+  const beginEdit = (m) => {
+    setEditingMsgId(m.id);
+    setEditText(m.text || "");
+  };
+
+  const cancelEdit = () => {
+    setEditingMsgId(null);
+    setEditText("");
+  };
+
+  const saveEdit = async () => {
+    if (!editingMsgId) return;
+    const rid = eventData?.chat_room_id;
+    if (!rid) {
+      showToast("Chat room unavailable", "danger");
+      return;
+    }
+    const trimmed = editText.trim();
+    if (!trimmed) return;
+    try {
+      await apiEditMessage(rid, editingMsgId, trimmed);
+      cancelEdit();
+      const m = await apiGetMessages(eventId);
+      setMessages(m.messages || []);
+    } catch (err) {
+      showToast(err.message || "Failed to edit message", "danger");
+      cancelEdit();
     }
   };
 
@@ -453,7 +673,6 @@ export const EventModal = ({
   const participants = eventData?.participants || [];
   const participantIds = new Set(participants.map((p) => p.id));
 
-  // friends I can still invite (not already in participants)
   const friendsAvailable = friends
     .map((f) => f.friend)
     .filter((u) => u && !participantIds.has(u.id));
@@ -713,14 +932,78 @@ export const EventModal = ({
                   ) : (
                     messages.map((m) => {
                       const mine = currentUser && m.sender_id === currentUser.id;
+                      const isEditing = editingMsgId === m.id;
+                      const hasImage = m.media_type === "image" && m.media_url;
+                      const hasAudio = m.media_type === "audio" && m.media_url;
+                      const showEditBtn = canEditChatMessage(m, currentUser?.id) && !isEditing;
                       return (
                         <div key={m.id} className={`chat-msg ${mine ? "mine" : ""}`}>
                           {!mine && (
                             <div className="meta">{m.sender_email}</div>
                           )}
-                          <div className="bubble">{m.text}</div>
+
+                          {isEditing ? (
+                            <div className="chat-edit-form">
+                              <Form.Control
+                                className="chat-edit-input"
+                                value={editText}
+                                onChange={(e) => setEditText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") saveEdit();
+                                  if (e.key === "Escape") cancelEdit();
+                                }}
+                                autoFocus
+                              />
+                              <Button
+                                className="chat-edit-save"
+                                onClick={saveEdit}
+                                disabled={!editText.trim()}
+                                title="Guardar"
+                              >
+                                <FiCheck />
+                              </Button>
+                              <Button
+                                className="chat-edit-cancel"
+                                onClick={cancelEdit}
+                                title="Cancelar"
+                              >
+                                <FiX />
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="bubble">
+                              {hasImage && (
+                                <img
+                                  src={m.media_url}
+                                  alt="foto"
+                                  className="chat-img"
+                                />
+                              )}
+                              {hasAudio && (
+                                <audio
+                                  controls
+                                  src={m.media_url}
+                                  className="chat-audio"
+                                />
+                              )}
+                              {m.text && <div>{m.text}</div>}
+                            </div>
+                          )}
+
                           <div className="meta">
                             {new Date(m.created_at).toLocaleString()}
+                            {m.edited_at && (
+                              <span className="meta-edited">(editado)</span>
+                            )}
+                            {showEditBtn && (
+                              <Button
+                                className="chat-edit-btn"
+                                onClick={() => beginEdit(m)}
+                                title="Editar (15 min)"
+                              >
+                                <FiEdit2 />
+                              </Button>
+                            )}
                           </div>
                         </div>
                       );
@@ -729,16 +1012,51 @@ export const EventModal = ({
                 </div>
 
                 <InputGroup className="mt-3">
+                  <Button
+                    className="chat-media-btn"
+                    onClick={handlePickChatImage}
+                    title="Enviar foto"
+                    disabled={isRecording || !!editingMsgId}
+                  >
+                    <FiImage />
+                  </Button>
+                  <Button
+                    className={`chat-media-btn ${isRecording ? "recording" : ""}`}
+                    onClick={toggleRecording}
+                    title={isRecording ? "Detener y enviar audio" : "Grabar audio"}
+                    disabled={!!editingMsgId}
+                  >
+                    {isRecording ? <FiSquare /> : <FiMic />}
+                  </Button>
                   <Form.Control
-                    placeholder="Type a message..."
+                    placeholder={
+                      isRecording
+                        ? "Grabando audio..."
+                        : editingMsgId
+                        ? "Editando un mensaje..."
+                        : "Type a message..."
+                    }
                     value={chatText}
                     onChange={(e) => setChatText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") handleSendMessage(); }}
+                    disabled={isRecording || !!editingMsgId}
                   />
-                  <Button variant="primary" onClick={handleSendMessage}>
+                  <Button
+                    variant="primary"
+                    onClick={handleSendMessage}
+                    disabled={isRecording || !!editingMsgId || !chatText.trim()}
+                  >
                     <FiSend />
                   </Button>
                 </InputGroup>
+
+                <input
+                  ref={chatImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={handleChatImageChange}
+                />
               </Tab>
             )}
           </Tabs>
@@ -749,16 +1067,19 @@ export const EventModal = ({
         {isEditMode && isCreator && (
           <Button
             variant="outline-danger"
-            onClick={() => setConfirmCancel(true)}
-            disabled={cancelling || saving}
+            onClick={handleDelete}
+            disabled={deleting || saving}
             className="me-auto"
           >
-            <FiXCircle className="me-1" /> Cancel event
+            {deleting
+              ? <Spinner animation="border" size="sm" />
+              : <><FiTrash2 className="me-1" /> Delete event</>
+            }
           </Button>
         )}
         <Button variant="outline-light" onClick={onHide}>Close</Button>
         {(!isEditMode || isCreator) && (
-          <Button onClick={handleSave} disabled={saving || cancelling}>
+          <Button onClick={handleSave} disabled={saving || deleting}>
             {saving
               ? <Spinner animation="border" size="sm" />
               : <><FiSave className="me-1" /> {isEditMode ? "Save changes" : "Create"}</>
@@ -766,41 +1087,6 @@ export const EventModal = ({
           </Button>
         )}
       </Modal.Footer>
-
-      {/* ─────────── CANCEL EVENT CONFIRMATION ─────────── */}
-      <Modal
-        show={confirmCancel}
-        onHide={() => !cancelling && setConfirmCancel(false)}
-        centered
-        contentClassName="bg-dark text-light border border-secondary"
-      >
-        <Modal.Header closeButton closeVariant="white">
-          <Modal.Title>Cancel this event?</Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          This will permanently remove the event from your list, drop its chat
-          and disinvite every participant. This action cannot be undone.
-        </Modal.Body>
-        <Modal.Footer className="border-secondary">
-          <Button
-            variant="outline-light"
-            onClick={() => setConfirmCancel(false)}
-            disabled={cancelling}
-          >
-            Keep event
-          </Button>
-          <Button
-            variant="danger"
-            onClick={handleCancelEvent}
-            disabled={cancelling}
-          >
-            {cancelling
-              ? <Spinner animation="border" size="sm" />
-              : <><FiXCircle className="me-1" /> Yes, cancel event</>
-            }
-          </Button>
-        </Modal.Footer>
-      </Modal>
     </Modal>
   );
 };

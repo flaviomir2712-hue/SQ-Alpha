@@ -1,8 +1,8 @@
 """empty message
 
-Revision ID: 318cd8fe38f7
+Revision ID: 979437b6d7fe
 Revises: 
-Create Date: 2026-06-01 20:29:29.093339
+Create Date: 2026-06-02 14:26:40.445079
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '318cd8fe38f7'
+revision = '979437b6d7fe'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -87,13 +87,38 @@ def upgrade():
 
     op.create_table('chat_room',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('event_id', sa.Integer(), nullable=False),
+    sa.Column('type', sa.String(length=10), nullable=False),
+    sa.Column('event_id', sa.Integer(), nullable=True),
+    sa.Column('user_a_id', sa.Integer(), nullable=True),
+    sa.Column('user_b_id', sa.Integer(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.CheckConstraint("type IN ('event', 'dm')", name='ck_chat_room_type'),
     sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
-    sa.PrimaryKeyConstraint('id')
+    sa.ForeignKeyConstraint(['user_a_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['user_b_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('user_a_id', 'user_b_id', name='uq_chat_room_dm_pair')
     )
     with op.batch_alter_table('chat_room', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_chat_room_event_id'), ['event_id'], unique=True)
+        batch_op.create_index(batch_op.f('ix_chat_room_user_a_id'), ['user_a_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_chat_room_user_b_id'), ['user_b_id'], unique=False)
+
+    op.create_table('event_invitation',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('event_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('inviter_id', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
+    sa.ForeignKeyConstraint(['inviter_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('event_id', 'user_id', name='uq_event_invitation_pair')
+    )
+    with op.batch_alter_table('event_invitation', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_event_invitation_event_id'), ['event_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_event_invitation_user_id'), ['user_id'], unique=False)
 
     op.create_table('event_participants',
     sa.Column('event_id', sa.Integer(), nullable=False),
@@ -106,8 +131,13 @@ def upgrade():
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('room_id', sa.Integer(), nullable=False),
     sa.Column('sender_id', sa.Integer(), nullable=False),
-    sa.Column('text', sa.Text(), nullable=False),
+    sa.Column('text', sa.Text(), nullable=True),
+    sa.Column('media_url', sa.Text(), nullable=True),
+    sa.Column('media_type', sa.String(length=20), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('edited_at', sa.DateTime(), nullable=True),
+    sa.CheckConstraint("media_type IS NULL OR media_type IN ('image', 'audio')", name='ck_chat_message_media_type'),
+    sa.CheckConstraint('(text IS NOT NULL) OR (media_url IS NOT NULL)', name='ck_chat_message_payload'),
     sa.ForeignKeyConstraint(['room_id'], ['chat_room.id'], ),
     sa.ForeignKeyConstraint(['sender_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
@@ -145,7 +175,14 @@ def downgrade():
 
     op.drop_table('chat_message')
     op.drop_table('event_participants')
+    with op.batch_alter_table('event_invitation', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_event_invitation_user_id'))
+        batch_op.drop_index(batch_op.f('ix_event_invitation_event_id'))
+
+    op.drop_table('event_invitation')
     with op.batch_alter_table('chat_room', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_chat_room_user_b_id'))
+        batch_op.drop_index(batch_op.f('ix_chat_room_user_a_id'))
         batch_op.drop_index(batch_op.f('ix_chat_room_event_id'))
 
     op.drop_table('chat_room')

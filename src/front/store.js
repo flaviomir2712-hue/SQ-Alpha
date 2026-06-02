@@ -8,6 +8,8 @@ export const initialStore = () => {
     ],
 
     // ── Chat (navbar) ──────────────────────────────
+    // chatRooms contains both event-rooms and dm-rooms.
+    // chatUnreadTotal is the sum of unread_count across every room.
     chatRooms: [],
     chatUnreadTotal: 0,
 
@@ -21,6 +23,10 @@ export const initialStore = () => {
     unreadNotifsCount: 0,
   };
 };
+
+// Sum the unread_count across every room — used to drive the navbar badge.
+const sumUnread = (rooms) =>
+  (rooms || []).reduce((sum, r) => sum + (r.unread_count || 0), 0);
 
 export default function storeReducer(store, action = {}) {
   switch (action.type) {
@@ -44,27 +50,36 @@ export default function storeReducer(store, action = {}) {
 
     case "set_chat_rooms": {
       const rooms = action.payload || [];
-      const total = rooms.reduce(
-        (sum, r) => sum + (r.unread_count || 0),
-        0
-      );
-      return { ...store, chatRooms: rooms, chatUnreadTotal: total };
+      return { ...store, chatRooms: rooms, chatUnreadTotal: sumUnread(rooms) };
     }
 
     case "set_chat_unread_total":
       return { ...store, chatUnreadTotal: action.payload || 0 };
 
+    // Optimistically clear unread on a single room (used right after
+    // PUT /chat/rooms/<id>/read fires) so the badge reacts instantly.
     case "mark_room_read_local": {
-      // After PUT /chat/rooms/<id>/read, reflect locally without refetch
       const roomId = action.payload;
       const rooms = (store.chatRooms || []).map((r) =>
         r.id === roomId ? { ...r, unread_count: 0 } : r
       );
-      const total = rooms.reduce(
-        (sum, r) => sum + (r.unread_count || 0),
-        0
-      );
-      return { ...store, chatRooms: rooms, chatUnreadTotal: total };
+      return { ...store, chatRooms: rooms, chatUnreadTotal: sumUnread(rooms) };
+    }
+
+    // Insert (or replace) a single room — used right after POST /api/chat/dm
+    // creates or returns an existing 1-on-1 room.
+    case "upsert_chat_room": {
+      const room = action.payload;
+      if (!room) return store;
+      const idx = (store.chatRooms || []).findIndex((r) => r.id === room.id);
+      let next;
+      if (idx === -1) {
+        next = [room, ...(store.chatRooms || [])];
+      } else {
+        next = [...store.chatRooms];
+        next[idx] = room;
+      }
+      return { ...store, chatRooms: next, chatUnreadTotal: sumUnread(next) };
     }
 
     case "logout":

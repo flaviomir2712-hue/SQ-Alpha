@@ -8,7 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 db = SQLAlchemy()
 
-# ── Association table for event participants ─────────────
+# ── Association table for event participants (accepted only) ─────────
+# Pending invitations live in `event_invitation` instead. Once an invitee
+# accepts, their row is moved here and the invitation is deleted.
 event_participants = Table(
     "event_participants",
     db.metadata,
@@ -71,9 +73,16 @@ class Event(db.Model):
     participants: Mapped[list["User"]] = relationship(
         "User", secondary=event_participants, lazy="selectin"
     )
+    invitations:  Mapped[list["EventInvitation"]] = relationship(
+        "EventInvitation",
+        foreign_keys="EventInvitation.event_id",
+        back_populates="event",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
-    def serialize(self):
-        return {
+    def serialize(self, current_user_id=None):
+        data = {
             "id":                 self.id,
             "title":              self.title,
             "date":               self.date,
@@ -87,17 +96,31 @@ class Event(db.Model):
             "creator_email":      self.creator.email,
             "participants":       [{"id": p.id, "email": p.email} for p in self.participants],
             "participants_count": len(self.participants),
+            "pending_invitations": [
+                {"id": inv.id, "user_id": inv.user_id,
+                 "user_email": inv.user.email if inv.user else None}
+                for inv in (self.invitations or [])
+            ],
+            "pending_invitations_count": len(self.invitations or []),
             "created_at":         self.created_at.isoformat() if self.created_at else None,
         }
+        if current_user_id is not None:
+            if current_user_id == self.creator_id:
+                data["my_status"] = "creator"
+            elif current_user_id in [p.id for p in self.participants]:
+                data["my_status"] = "accepted"
+            elif any(inv.user_id == current_user_id for inv in (self.invitations or [])):
+                data["my_status"] = "pending"
+            else:
+                data["my_status"] = "none"
+            # invitation_id is handy for client-side accept/refuse routing
+            my_inv = next((inv for inv in (self.invitations or []) if inv.user_id == current_user_id), None)
+            data["my_invitation_id"] = my_inv.id if my_inv else None
+        return data
 
 
 
 # ── FRIENDSHIP ────────────────────────────────────────────
-# A single row represents a directed request from `requester_id`
-# to `addressee_id`. Status transitions:
-#   pending  -> accepted   (addressee accepts)
-#   pending  -> refused    (addressee refuses; row stays for history)
-#   accepted -> (deleted)  (either side removes the friendship)
 class Friendship(db.Model):
     __tablename__ = "friendship"
 
@@ -140,22 +163,65 @@ class Friendship(db.Model):
         return data
 
 
+# ── EVENT INVITATION ─────────────────────────────────────────
+# Pending only. When the invitee accepts, the row is deleted and the user
+# is added to event_participants. When the invitee refuses, the row is
+# deleted with no further effect (no historical "refused" rows kept).
+class EventInvitation(db.Model):
+    __tablename__ = "event_invitation"
+
+    id:           Mapped[int] = mapped_column(primary_key=True)
+    event_id:     Mapped[int] = mapped_column(ForeignKey("event.id"), nullable=False, index=True)
+    user_id:      Mapped[int] = mapped_column(ForeignKey("user.id"),  nullable=False, index=True)
+    inviter_id:   Mapped[int] = mapped_column(ForeignKey("user.id"),  nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    event:   Mapped["Event"] = relationship("Event", foreign_keys=[event_id], back_populates="invitations")
+    user:    Mapped["User"]  = relationship("User",  foreign_keys=[user_id])
+    inviter: Mapped["User"]  = relationship("User",  foreign_keys=[inviter_id])
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "user_id", name="uq_event_invitation_pair"),
+    )
+
+    def serialize(self):
+        return {
+            "id":         self.id,
+            "event_id":   self.event_id,
+            "user_id":    self.user_id,
+            "inviter_id": self.inviter_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 # ── CHAT ROOM ─────────────────────────────────────────────
-# One chat room per event (auto-created when the event is created).
-# Membership is implicit: anyone in event.participants can read/write.
+# Two flavours of rooms share the same table:
+#   - "event" : tied to an event via event_id. Membership = event.participants.
+#   - "dm"    : 1-on-1 chat between user_a_id and user_b_id, stored in
+#               canonical order (user_a_id < user_b_id).
 class ChatRoom(db.Model):
     __tablename__ = "chat_room"
 
     id:         Mapped[int] = mapped_column(primary_key=True)
-    event_id:   Mapped[int] = mapped_column(ForeignKey("event.id"), nullable=False, unique=True, index=True)
+    type:       Mapped[str] = mapped_column(String(10), nullable=False, default="event")
+    event_id:   Mapped[int] = mapped_column(ForeignKey("event.id"), nullable=True, unique=True, index=True)
+    user_a_id:  Mapped[int] = mapped_column(ForeignKey("user.id"),  nullable=True, index=True)
+    user_b_id:  Mapped[int] = mapped_column(ForeignKey("user.id"),  nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
     event:    Mapped["Event"] = relationship("Event")
+    user_a:   Mapped["User"]  = relationship("User", foreign_keys=[user_a_id])
+    user_b:   Mapped["User"]  = relationship("User", foreign_keys=[user_b_id])
     messages: Mapped[list["ChatMessage"]] = relationship(
         "ChatMessage", back_populates="room", cascade="all, delete-orphan", order_by="ChatMessage.created_at"
     )
     memberships: Mapped[list["ChatRoomMembership"]] = relationship(
         "ChatRoomMembership", back_populates="room", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_a_id", "user_b_id", name="uq_chat_room_dm_pair"),
+        CheckConstraint("type IN ('event', 'dm')", name="ck_chat_room_type"),
     )
 
     def serialize(self, current_user_id=None):
@@ -165,13 +231,16 @@ class ChatRoom(db.Model):
             last_message = {
                 "id":           last.id,
                 "text":         last.text,
+                "media_url":    last.media_url,
+                "media_type":   last.media_type,
                 "sender_id":    last.sender_id,
                 "sender_email": last.sender.email if last.sender else None,
                 "created_at":   last.created_at.isoformat() if last.created_at else None,
+                "edited_at":    last.edited_at.isoformat() if last.edited_at else None,
             }
 
-        # unread count for the current user (messages newer than their last_read_at,
-        # excluding messages they sent themselves)
+        # unread count for the current user — messages newer than their
+        # last_read_at on this room and not authored by themselves.
         unread_count = 0
         if current_user_id is not None:
             membership = next(
@@ -185,48 +254,49 @@ class ChatRoom(db.Model):
                 if last_read_at is None or msg.created_at > last_read_at:
                     unread_count += 1
 
-        return {
+        base = {
             "id":             self.id,
+            "type":           self.type,
             "event_id":       self.event_id,
-            "type":           "event",
             "created_at":     self.created_at.isoformat() if self.created_at else None,
-            "participants":   [{"id": p.id, "email": p.email} for p in self.event.participants] if self.event else [],
-            "event_title":    self.event.title if self.event else None,
-            "event_image":    self.event.image if self.event else None,
             "messages_count": len(self.messages),
             "unread_count":   unread_count,
             "last_message":   last_message,
         }
 
+        if self.type == "event":
+            base.update({
+                "participants":   [{"id": p.id, "email": p.email} for p in self.event.participants] if self.event else [],
+                "event_title":    self.event.title if self.event else None,
+                "event_image":    self.event.image if self.event else None,
+                "dm_partner":     None,
+            })
+        else:  # dm
+            users = []
+            if self.user_a: users.append(self.user_a)
+            if self.user_b: users.append(self.user_b)
+            partner = None
+            if current_user_id is not None:
+                partner = next((u for u in users if u.id != current_user_id), None)
+            base.update({
+                "participants": [{"id": u.id, "email": u.email} for u in users],
+                "event_title":  None,
+                "event_image":  None,
+                "dm_partner":   {
+                    "id":                  partner.id,
+                    "email":               partner.email,
+                    "username":            partner.username,
+                    "profile_picture_url": partner.profile_picture_url,
+                } if partner else None,
+            })
 
-# ── CHAT MESSAGE ──────────────────────────────────────────
-class ChatMessage(db.Model):
-    __tablename__ = "chat_message"
-
-    id:         Mapped[int] = mapped_column(primary_key=True)
-    room_id:    Mapped[int] = mapped_column(ForeignKey("chat_room.id"), nullable=False, index=True)
-    sender_id:  Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
-    text:       Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-
-    room:   Mapped["ChatRoom"] = relationship("ChatRoom", back_populates="messages")
-    sender: Mapped["User"]     = relationship("User", foreign_keys=[sender_id])
-
-    def serialize(self):
-        return {
-            "id":           self.id,
-            "room_id":      self.room_id,
-            "sender_id":    self.sender_id,
-            "sender_email": self.sender.email if self.sender else None,
-            "text":         self.text,
-            "created_at":   self.created_at.isoformat() if self.created_at else None,
-        }
+        return base
 
 
 # ── CHAT ROOM MEMBERSHIP ──────────────────────────────────
-# Tracks per-user "last read" timestamp on a chat room.
-# Created on demand the first time a user opens the room.
-# Used to compute the unread message count shown in the navbar badge.
+# Tracks per-user "last read" timestamp for a room. Created on demand
+# the first time a user opens the room. Used to compute the unread
+# message count shown in the navbar badge.
 class ChatRoomMembership(db.Model):
     __tablename__ = "chat_room_membership"
 
@@ -253,19 +323,59 @@ class ChatRoomMembership(db.Model):
         }
 
 
+# ── CHAT MESSAGE ──────────────────────────────────────────
+# A message has either text, media_url, or both. media_type qualifies
+# the attachment ("image" | "audio"). The media payload itself lives in
+# media_url as a base64 dataURL (same approach used by event.image).
+# edited_at is set when the sender edits the text within the allowed
+# window (15 min) — see PUT /chat/rooms/<rid>/messages/<mid>.
+class ChatMessage(db.Model):
+    __tablename__ = "chat_message"
+
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    room_id:    Mapped[int] = mapped_column(ForeignKey("chat_room.id"), nullable=False, index=True)
+    sender_id:  Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
+    text:       Mapped[str] = mapped_column(Text, nullable=True)
+    media_url:  Mapped[str] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    edited_at:  Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+    room:   Mapped["ChatRoom"] = relationship("ChatRoom", back_populates="messages")
+    sender: Mapped["User"]     = relationship("User", foreign_keys=[sender_id])
+
+    __table_args__ = (
+        CheckConstraint(
+            "(text IS NOT NULL) OR (media_url IS NOT NULL)",
+            name="ck_chat_message_payload",
+        ),
+        CheckConstraint(
+            "media_type IS NULL OR media_type IN ('image', 'audio')",
+            name="ck_chat_message_media_type",
+        ),
+    )
+
+    def serialize(self):
+        return {
+            "id":           self.id,
+            "room_id":      self.room_id,
+            "sender_id":    self.sender_id,
+            "sender_email": self.sender.email if self.sender else None,
+            "text":         self.text,
+            "media_url":    self.media_url,
+            "media_type":   self.media_type,
+            "created_at":   self.created_at.isoformat() if self.created_at else None,
+            "edited_at":    self.edited_at.isoformat() if self.edited_at else None,
+        }
+
+
 # ── NOTIFICATION ──────────────────────────────────────────
-# A persisted notification for a single recipient.
-#
 # Types currently emitted:
 #   - "friend_request"  payload: {"friendship_id": int, "from_user_id": int, "from_email": str}
-#   - "event_invite"    payload: {"event_id": int,      "from_user_id": int, "from_email": str,
-#                                 "event_title": str|None, "event_date": str|None, "event_time": str|None}
-#
-# Notifications are created server-side whenever a friend request is
-# sent or a participant is added to an event by the creator. The
-# frontend lists them, the user accepts/refuses through the existing
-# friendship / event endpoints, and the notification is marked read
-# (or deleted) accordingly.
+#   - "event_invite"    payload: {"event_id": int, "invitation_id": int,
+#                                 "from_user_id": int, "from_email": str,
+#                                 "event_title": str|None, "event_date": str|None,
+#                                 "event_time": str|None}
 class Notification(db.Model):
     __tablename__ = "notification"
 
