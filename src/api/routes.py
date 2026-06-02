@@ -59,9 +59,11 @@ def _delete_event_invite_notifications(event_id, user_id=None):
 # =========================================================
 
 def _get_or_create_membership(room_id, user_id):
-    m = ChatRoomMembership.query.filter_by(room_id=room_id, user_id=user_id).first()
+    m = ChatRoomMembership.query.filter_by(
+        room_id=room_id, user_id=user_id).first()
     if not m:
-        m = ChatRoomMembership(room_id=room_id, user_id=user_id, last_read_at=None)
+        m = ChatRoomMembership(
+            room_id=room_id, user_id=user_id, last_read_at=None)
         db.session.add(m)
     return m
 
@@ -136,7 +138,10 @@ def login():
     if not user or not check_password_hash(user.password, password):
         return jsonify({"msg": "Invalid email or password"}), 401
 
-    access_token = create_access_token(identity=str(user.id))
+    access_token = create_access_token(
+        identity=str(user.id),
+        expires_delta=timedelta(days=7)
+    )
 
     return jsonify({"token": access_token, "user": user.serialize()}), 200
 
@@ -260,6 +265,8 @@ def get_events():
 # =========================================================
 
 # ---------- GET SINGLE EVENT ----------
+
+
 @api.route('/events/<int:event_id>', methods=['GET'])
 @jwt_required()
 def get_event(event_id):
@@ -272,7 +279,7 @@ def get_event(event_id):
     is_participant = current_user_id in [p.id for p in event.participants]
 
     data = event.serialize(current_user_id=current_user_id)
-    data["is_creator"]     = is_creator
+    data["is_creator"] = is_creator
     data["is_participant"] = is_participant
 
     # attach chat room id so the client can open the conversation directly
@@ -295,7 +302,8 @@ def update_event(event_id):
 
     body = request.get_json() or {}
 
-    editable = ["title", "date", "time", "location", "latitude", "longitude", "details", "image"]
+    editable = ["title", "date", "time", "location",
+                "latitude", "longitude", "details", "image"]
     for field in editable:
         if field in body:
             setattr(event, field, body[field])
@@ -329,7 +337,8 @@ def invite_to_event(event_id):
     is_friend = Friendship.query.filter(
         Friendship.status == "accepted",
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target_id)) |
-        ((Friendship.requester_id == target_id) & (Friendship.addressee_id == current_user_id))
+        ((Friendship.requester_id == target_id) &
+         (Friendship.addressee_id == current_user_id))
     ).first()
     if not is_friend:
         return jsonify({"msg": "You can only invite accepted friends"}), 403
@@ -489,7 +498,8 @@ def remove_participant(event_id, user_id):
         return jsonify({"msg": "Participant removed", "event": event.serialize(current_user_id=current_user_id)}), 200
 
     # Pending invitee?
-    inv = EventInvitation.query.filter_by(event_id=event_id, user_id=user_id).first()
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=user_id).first()
     if inv:
         db.session.delete(inv)
         _delete_event_invite_notifications(event_id, user_id=user_id)
@@ -503,6 +513,8 @@ def remove_participant(event_id, user_id):
 # =========================================================
 
 # ---------- LIST ACCEPTED FRIENDS ----------
+
+
 @api.route('/friends', methods=['GET'])
 @jwt_required()
 def list_friends():
@@ -562,7 +574,8 @@ def send_friend_request():
 
     existing = Friendship.query.filter(
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target.id)) |
-        ((Friendship.requester_id == target.id) & (Friendship.addressee_id == current_user_id))
+        ((Friendship.requester_id == target.id) &
+         (Friendship.addressee_id == current_user_id))
     ).first()
 
     me = db.session.get(User, current_user_id)
@@ -706,7 +719,8 @@ def unfriend(user_id):
         Friendship.status == "accepted"
     ).filter(
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == user_id)) |
-        ((Friendship.requester_id == user_id) & (Friendship.addressee_id == current_user_id))
+        ((Friendship.requester_id == user_id) &
+         (Friendship.addressee_id == current_user_id))
     ).first()
 
     if not friendship:
@@ -736,7 +750,8 @@ def search_users():
     for u in users:
         pair = Friendship.query.filter(
             ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == u.id)) |
-            ((Friendship.requester_id == u.id) & (Friendship.addressee_id == current_user_id))
+            ((Friendship.requester_id == u.id) &
+             (Friendship.addressee_id == current_user_id))
         ).first()
 
         results.append({
@@ -757,6 +772,7 @@ def search_users():
 # PROFILE
 # =========================================================
 
+
 @api.route('/profile/me', methods=['GET'])
 @jwt_required()
 def get_my_profile():
@@ -765,12 +781,14 @@ def get_my_profile():
     if not user:
         return jsonify({"msg": "User not found"}), 404
 
-    events_created_count = Event.query.filter(Event.creator_id == current_user_id).count()
+    events_created_count = Event.query.filter(
+        Event.creator_id == current_user_id).count()
 
     today = datetime.utcnow().date()
 
     all_events = Event.query.all()
-    participated_all = [e for e in all_events if current_user_id in [p.id for p in e.participants]]
+    participated_all = [e for e in all_events if current_user_id in [
+        p.id for p in e.participants]]
 
     def _is_past(e):
         try:
@@ -866,7 +884,8 @@ def get_user_profile(user_id):
     if user_id != current_user_id:
         friendship = Friendship.query.filter(
             ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == user_id)) |
-            ((Friendship.requester_id == user_id) & (Friendship.addressee_id == current_user_id))
+            ((Friendship.requester_id == user_id) &
+             (Friendship.addressee_id == current_user_id))
         ).first()
 
     is_self = (user_id == current_user_id)
@@ -884,8 +903,8 @@ def get_user_profile(user_id):
     }
 
     if is_self or is_friend:
-        data["email"]     = user.email
-        data["phone"]     = user.phone
+        data["email"] = user.email
+        data["phone"] = user.phone
         data["birthdate"] = user.birthdate
 
     if is_self:
@@ -903,12 +922,14 @@ def get_user_profile(user_id):
         data["friendship_direction"] = None
         data["friendship_id"] = None
 
-    events_created_count = Event.query.filter(Event.creator_id == user_id).count()
+    events_created_count = Event.query.filter(
+        Event.creator_id == user_id).count()
 
     today = datetime.utcnow().date()
 
     all_events = Event.query.all()
-    participated_all = [e for e in all_events if user_id in [p.id for p in e.participants]]
+    participated_all = [e for e in all_events if user_id in [
+        p.id for p in e.participants]]
 
     def _is_past(e):
         try:
@@ -951,6 +972,7 @@ def get_user_profile(user_id):
 # =========================================================
 # CHAT
 # =========================================================
+
 
 def _can_access_room(room, user_id):
     if room.type == "event":
@@ -1050,14 +1072,16 @@ def create_or_get_dm():
     is_friend = Friendship.query.filter(
         Friendship.status == "accepted",
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target_id)) |
-        ((Friendship.requester_id == target_id) & (Friendship.addressee_id == current_user_id))
+        ((Friendship.requester_id == target_id) &
+         (Friendship.addressee_id == current_user_id))
     ).first()
     if not is_friend:
         return jsonify({"msg": "You can only DM accepted friends"}), 403
 
     user_a, user_b = sorted([current_user_id, target_id])
 
-    room = ChatRoom.query.filter_by(type="dm", user_a_id=user_a, user_b_id=user_b).first()
+    room = ChatRoom.query.filter_by(
+        type="dm", user_a_id=user_a, user_b_id=user_b).first()
     if room:
         return jsonify({
             "msg":  "DM already exists",
@@ -1113,7 +1137,8 @@ def chat_search():
             continue
 
         ua, ub = sorted([current_user_id, other.id])
-        dm = ChatRoom.query.filter_by(type="dm", user_a_id=ua, user_b_id=ub).first()
+        dm = ChatRoom.query.filter_by(
+            type="dm", user_a_id=ua, user_b_id=ub).first()
         friends.append({
             "user": {
                 "id":                  other.id,
@@ -1138,7 +1163,8 @@ def list_room_messages(room_id):
     if not _can_access_room(room, current_user_id):
         return jsonify({"msg": "Not allowed in this room"}), 403
 
-    messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
+    messages = ChatMessage.query.filter_by(
+        room_id=room.id).order_by(ChatMessage.created_at).all()
     return jsonify({
         "room_id":  room.id,
         "type":     room.type,
@@ -1237,7 +1263,8 @@ def list_event_messages(event_id):
         db.session.add(room)
         db.session.commit()
 
-    messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
+    messages = ChatMessage.query.filter_by(
+        room_id=room.id).order_by(ChatMessage.created_at).all()
     return jsonify({
         "room_id":  room.id,
         "messages": [m.serialize() for m in messages]
