@@ -13,7 +13,6 @@ import {
 } from "react-bootstrap";
 import {
 	FiHome,
-	FiCompass,
 	FiPlus,
 	FiMessageSquare,
 	FiUser,
@@ -324,9 +323,9 @@ export const Footer = () => {
 					<span>home</span>
 				</Link>
 
-				<Link to="/map" className="bottom-item text-decoration-none text-reset">
-					<FiCompass />
-					<span>explore</span>
+				<Link to="/calendar" className="bottom-item text-decoration-none text-reset">
+					<FiCalendar />
+					<span>calendar</span>
 				</Link>
 
 				<button

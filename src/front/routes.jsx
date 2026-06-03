@@ -1,7 +1,7 @@
 import {
-    createBrowserRouter,
-    createRoutesFromElements,
-    Route,
+	createBrowserRouter,
+	createRoutesFromElements,
+	Route,
 } from "react-router-dom";
 
 import { Layout } from "./pages/Layout";
@@ -13,6 +13,7 @@ import { Login } from "./pages/Login";
 import { Friends } from "./pages/Friends";
 import { FriendProfile } from "./pages/FriendProfile";
 import { EventsList } from "./pages/EventsList";
+import { Calendar } from "./pages/Calendar";
 import Map from "./pages/Map";
 
 export const router = createBrowserRouter(
@@ -46,6 +47,9 @@ export const router = createBrowserRouter(
 
 			{/* Events */}
 			<Route path="/events" element={<EventsList />} />
+
+			{/* Calendar */}
+			<Route path="/calendar" element={<Calendar />} />
 
 			<Route path="/map" element={<Map />} />
 		</Route>
