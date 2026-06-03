@@ -2,9 +2,11 @@ from flask import Blueprint, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy import text
 from api.models import (
     db, User, Event, Friendship, ChatRoom, ChatMessage,
     Notification, EventInvitation, ChatRoomMembership,
+    event_participants,
 )
 from datetime import datetime, timedelta
 
@@ -70,6 +72,7 @@ def _can_access_room(room, user_id):
 # =========================================================
 # HELLO
 # =========================================================
+
 @api.route('/hello', methods=['GET'])
 def handle_hello():
     return jsonify({"message": "Hello! I'm a message that came from the backend"}), 200
@@ -78,6 +81,7 @@ def handle_hello():
 # =========================================================
 # REGISTER
 # =========================================================
+
 @api.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == "GET":
@@ -88,30 +92,35 @@ def register():
         }), 200
 
     body = request.get_json() or {}
-    email = body.get("email"); password = body.get("password")
+    email = body.get("email")
+    password = body.get("password")
     if not email or not password:
         return jsonify({"msg": "Email and password are required"}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({"msg": "User already exists"}), 400
 
     new_user = User(email=email, password=generate_password_hash(password), is_active=True)
-    db.session.add(new_user); db.session.commit()
+    db.session.add(new_user)
+    db.session.commit()
     return jsonify({"msg": "User registered successfully", "user": new_user.serialize()}), 201
 
 
 # =========================================================
 # LOGIN
 # =========================================================
+
 @api.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == "GET":
         return jsonify({
-            "endpoint": "/api/login", "method": "POST",
+            "endpoint": "/api/login",
+            "method": "POST",
             "body": {"email": "test@test.com", "password": "123456"}
         }), 200
 
     body = request.get_json() or {}
-    email = body.get("email"); password = body.get("password")
+    email = body.get("email")
+    password = body.get("password")
     if not email or not password:
         return jsonify({"msg": "Email and password are required"}), 400
 
@@ -126,6 +135,7 @@ def login():
 # =========================================================
 # PRIVATE
 # =========================================================
+
 @api.route('/private', methods=['GET'])
 @jwt_required()
 def private():
@@ -138,6 +148,7 @@ def private():
 # =========================================================
 # EVENTS
 # =========================================================
+
 @api.route('/events', methods=['POST'])
 @jwt_required()
 def create_event():
@@ -152,13 +163,18 @@ def create_event():
 
     event = Event(
         title=body.get("title"),
-        date=body["date"], time=body["time"], location=body["location"],
-        latitude=body.get("latitude"), longitude=body.get("longitude"),
-        details=body.get("details"), image=body.get("image"),
-        creator_id=current_user_id
+        date=body["date"],
+        time=body["time"],
+        location=body["location"],
+        latitude=body.get("latitude"),
+        longitude=body.get("longitude"),
+        details=body.get("details"),
+        image=body.get("image"),
+        creator_id=current_user_id,
     )
     event.participants.append(creator)
-    db.session.add(event); db.session.flush()
+    db.session.add(event)
+    db.session.flush()
 
     room = ChatRoom(type="event", event_id=event.id)
     db.session.add(room)
@@ -180,11 +196,16 @@ def create_event():
 
     for friend, inv in invitations:
         _create_notification(
-            user_id=friend.id, notif_type="event_invite",
+            user_id=friend.id,
+            notif_type="event_invite",
             payload={
-                "event_id": event.id, "invitation_id": inv.id,
-                "from_user_id": current_user_id, "from_email": creator.email,
-                "event_title": event.title, "event_date": event.date, "event_time": event.time,
+                "event_id": event.id,
+                "invitation_id": inv.id,
+                "from_user_id": current_user_id,
+                "from_email": creator.email,
+                "event_title": event.title,
+                "event_date": event.date,
+                "event_time": event.time,
             },
         )
 
@@ -200,9 +221,11 @@ def get_events():
     visible = []
     for e in all_events:
         if e.creator_id == current_user_id:
-            visible.append(e); continue
+            visible.append(e)
+            continue
         if current_user_id in [p.id for p in e.participants]:
-            visible.append(e); continue
+            visible.append(e)
+            continue
         if any(inv.user_id == current_user_id for inv in (e.invitations or [])):
             visible.append(e)
     return jsonify([e.serialize(current_user_id=current_user_id) for e in visible]), 200
@@ -283,15 +306,21 @@ def invite_to_event(event_id):
         return jsonify({"msg": "User has already been invited"}), 409
 
     inv = EventInvitation(event_id=event.id, user_id=target.id, inviter_id=current_user_id)
-    db.session.add(inv); db.session.flush()
+    db.session.add(inv)
+    db.session.flush()
 
     creator = db.session.get(User, current_user_id)
     _create_notification(
-        user_id=target.id, notif_type="event_invite",
+        user_id=target.id,
+        notif_type="event_invite",
         payload={
-            "event_id": event.id, "invitation_id": inv.id,
-            "from_user_id": current_user_id, "from_email": creator.email,
-            "event_title": event.title, "event_date": event.date, "event_time": event.time,
+            "event_id": event.id,
+            "invitation_id": inv.id,
+            "from_user_id": current_user_id,
+            "from_email": creator.email,
+            "event_title": event.title,
+            "event_date": event.date,
+            "event_time": event.time,
         },
     )
 
@@ -301,6 +330,42 @@ def invite_to_event(event_id):
         "event": event.serialize(current_user_id=current_user_id),
         "invitation": inv.serialize(),
     }), 201
+
+
+# ---------- RSVP TO EVENT ----------
+# Body: { "rsvp": "going" | "maybe" | "not_going" | null }
+# Any participant can update their RSVP at any time.
+# Sending the same value again clears it (toggle behaviour).
+@api.route('/events/<int:event_id>/rsvp', methods=['PATCH'])
+@jwt_required()
+def rsvp_event(event_id):
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+
+    if current_user_id not in [p.id for p in event.participants]:
+        return jsonify({"msg": "You are not a participant of this event"}), 403
+
+    body = request.get_json() or {}
+    rsvp_value = body.get("rsvp")  # None clears the rsvp
+
+    allowed = {None, "going", "maybe", "not_going"}
+    if rsvp_value not in allowed:
+        return jsonify({"msg": "rsvp must be one of: going, maybe, not_going, or null"}), 400
+
+    # Update the rsvp column on the association table row directly
+    db.session.execute(
+        text("UPDATE event_participants SET rsvp = :rsvp WHERE event_id = :eid AND user_id = :uid"),
+        {"rsvp": rsvp_value, "eid": event_id, "uid": current_user_id},
+    )
+    db.session.commit()
+
+    return jsonify({
+        "msg": "RSVP updated",
+        "rsvp": rsvp_value,
+        "event": event.serialize(current_user_id=current_user_id),
+    }), 200
 
 
 @api.route('/events/<int:event_id>/accept', methods=['PUT'])
@@ -363,7 +428,8 @@ def delete_event(event_id):
     if room:
         db.session.delete(room)
 
-    db.session.delete(event); db.session.commit()
+    db.session.delete(event)
+    db.session.commit()
     return jsonify({"msg": "Event deleted"}), 200
 
 
@@ -401,6 +467,7 @@ def remove_participant(event_id, user_id):
 # =========================================================
 # FRIENDS
 # =========================================================
+
 @api.route('/friends', methods=['GET'])
 @jwt_required()
 def list_friends():
@@ -424,7 +491,9 @@ def list_friend_requests():
     elif direction == "outgoing":
         base = base.filter(Friendship.requester_id == current_user_id)
     elif direction == "all":
-        base = base.filter((Friendship.requester_id == current_user_id) | (Friendship.addressee_id == current_user_id))
+        base = base.filter(
+            (Friendship.requester_id == current_user_id) | (Friendship.addressee_id == current_user_id)
+        )
     else:
         return jsonify({"msg": "direction must be incoming, outgoing or all"}), 400
 
@@ -457,35 +526,45 @@ def send_friend_request():
 
     if existing:
         if existing.status == "accepted":
-            return jsonify({"msg": "You are already friends",
-                            "friendship": existing.serialize(current_user_id=current_user_id)}), 409
+            return jsonify({
+                "msg": "You are already friends",
+                "friendship": existing.serialize(current_user_id=current_user_id),
+            }), 409
         if existing.status == "pending":
-            return jsonify({"msg": "A request is already pending",
-                            "friendship": existing.serialize(current_user_id=current_user_id)}), 409
+            return jsonify({
+                "msg": "A request is already pending",
+                "friendship": existing.serialize(current_user_id=current_user_id),
+            }), 409
+        # status is "refused" — allow re-sending
         existing.requester_id = current_user_id
         existing.addressee_id = target.id
         existing.status = "pending"
-
         _create_notification(
-            user_id=target.id, notif_type="friend_request",
+            user_id=target.id,
+            notif_type="friend_request",
             payload={"friendship_id": existing.id, "from_user_id": current_user_id, "from_email": me.email},
         )
-
         db.session.commit()
-        return jsonify({"msg": "Friend request re-sent",
-                        "friendship": existing.serialize(current_user_id=current_user_id)}), 201
+        return jsonify({
+            "msg": "Friend request re-sent",
+            "friendship": existing.serialize(current_user_id=current_user_id),
+        }), 201
 
     new_friendship = Friendship(requester_id=current_user_id, addressee_id=target.id, status="pending")
-    db.session.add(new_friendship); db.session.flush()
+    db.session.add(new_friendship)
+    db.session.flush()
 
     _create_notification(
-        user_id=target.id, notif_type="friend_request",
+        user_id=target.id,
+        notif_type="friend_request",
         payload={"friendship_id": new_friendship.id, "from_user_id": current_user_id, "from_email": me.email},
     )
 
     db.session.commit()
-    return jsonify({"msg": "Friend request sent",
-                    "friendship": new_friendship.serialize(current_user_id=current_user_id)}), 201
+    return jsonify({
+        "msg": "Friend request sent",
+        "friendship": new_friendship.serialize(current_user_id=current_user_id),
+    }), 201
 
 
 @api.route('/friends/requests/<int:request_id>/accept', methods=['PUT'])
@@ -504,8 +583,10 @@ def accept_friend_request(request_id):
     _delete_friend_request_notifications(friendship.id)
 
     db.session.commit()
-    return jsonify({"msg": "Friend request accepted",
-                    "friendship": friendship.serialize(current_user_id=current_user_id)}), 200
+    return jsonify({
+        "msg": "Friend request accepted",
+        "friendship": friendship.serialize(current_user_id=current_user_id),
+    }), 200
 
 
 @api.route('/friends/requests/<int:request_id>/refuse', methods=['PUT'])
@@ -524,8 +605,10 @@ def refuse_friend_request(request_id):
     _delete_friend_request_notifications(friendship.id)
 
     db.session.commit()
-    return jsonify({"msg": "Friend request refused",
-                    "friendship": friendship.serialize(current_user_id=current_user_id)}), 200
+    return jsonify({
+        "msg": "Friend request refused",
+        "friendship": friendship.serialize(current_user_id=current_user_id),
+    }), 200
 
 
 @api.route('/friends/requests/<int:request_id>', methods=['DELETE'])
@@ -541,7 +624,8 @@ def cancel_friend_request(request_id):
         return jsonify({"msg": f"Request is already {friendship.status} and cannot be cancelled"}), 409
 
     _delete_friend_request_notifications(friendship.id)
-    db.session.delete(friendship); db.session.commit()
+    db.session.delete(friendship)
+    db.session.commit()
     return jsonify({"msg": "Friend request cancelled"}), 200
 
 
@@ -550,8 +634,7 @@ def cancel_friend_request(request_id):
 def unfriend(user_id):
     current_user_id = int(get_jwt_identity())
     friendship = Friendship.query.filter(
-        Friendship.status == "accepted"
-    ).filter(
+        Friendship.status == "accepted",
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == user_id)) |
         ((Friendship.requester_id == user_id) & (Friendship.addressee_id == current_user_id))
     ).first()
@@ -559,7 +642,8 @@ def unfriend(user_id):
     if not friendship:
         return jsonify({"msg": "Friendship not found"}), 404
 
-    db.session.delete(friendship); db.session.commit()
+    db.session.delete(friendship)
+    db.session.commit()
     return jsonify({"msg": "Friend removed"}), 200
 
 
@@ -573,7 +657,8 @@ def search_users():
 
     users = (User.query
              .filter(User.id != current_user_id, User.email.ilike(f"%{q}%"))
-             .limit(20).all())
+             .limit(20)
+             .all())
 
     results = []
     for u in users:
@@ -582,10 +667,14 @@ def search_users():
             ((Friendship.requester_id == u.id) & (Friendship.addressee_id == current_user_id))
         ).first()
         results.append({
-            "id": u.id, "email": u.email,
+            "id": u.id,
+            "email": u.email,
             "status": pair.status if pair else "none",
-            "direction": ("outgoing" if pair and pair.requester_id == current_user_id
-                          else "incoming" if pair and pair.addressee_id == current_user_id else None),
+            "direction": (
+                "outgoing" if pair and pair.requester_id == current_user_id
+                else "incoming" if pair and pair.addressee_id == current_user_id
+                else None
+            ),
             "friendship_id": pair.id if pair else None,
         })
     return jsonify(results), 200
@@ -595,19 +684,13 @@ def search_users():
 # PROFILE
 # =========================================================
 
-@api.route('/profile/me', methods=['GET'])
-@jwt_required()
-def get_my_profile():
-    current_user_id = int(get_jwt_identity())
-    user = db.session.get(User, current_user_id)
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-
-    events_created_count = Event.query.filter(Event.creator_id == current_user_id).count()
+def _compute_stats(user_id):
+    """Shared helper — computes activity stats for any user_id."""
+    events_created_count = Event.query.filter(Event.creator_id == user_id).count()
     today = datetime.utcnow().date()
 
     all_events = Event.query.all()
-    participated_all = [e for e in all_events if current_user_id in [p.id for p in e.participants]]
+    participated_all = [e for e in all_events if user_id in [p.id for p in e.participants]]
 
     def _is_past(e):
         try:
@@ -629,19 +712,33 @@ def get_my_profile():
             continue
 
     activity_avg_per_week = round(recent_count / 4.0, 2)
-    if activity_avg_per_week < 2: activity_level = "Peu actif"
-    elif activity_avg_per_week < 3: activity_level = "Actif"
-    else: activity_level = "Très actif"
+    if activity_avg_per_week < 2:
+        activity_level = "Peu actif"
+    elif activity_avg_per_week < 3:
+        activity_level = "Actif"
+    else:
+        activity_level = "Très actif"
     activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
 
-    data = user.serialize()
-    data["stats"] = {
-        "events_created_count": events_created_count,
+    return {
+        "events_created_count":      events_created_count,
         "events_participated_count": events_participated_count,
-        "activity_avg_per_week": activity_avg_per_week,
-        "activity_level": activity_level,
-        "activity_percent": activity_percent,
+        "activity_avg_per_week":     activity_avg_per_week,
+        "activity_level":            activity_level,
+        "activity_percent":          activity_percent,
     }
+
+
+@api.route('/profile/me', methods=['GET'])
+@jwt_required()
+def get_my_profile():
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    data = user.serialize()
+    data["stats"] = _compute_stats(current_user_id)
     return jsonify(data), 200
 
 
@@ -691,61 +788,37 @@ def get_user_profile(user_id):
     is_friend = friendship is not None and friendship.status == "accepted"
 
     data = {
-        "id": user.id, "username": user.username,
-        "first_name": user.first_name, "last_name": user.last_name,
-        "city": user.city, "bio": user.bio,
+        "id":                  user.id,
+        "username":            user.username,
+        "first_name":          user.first_name,
+        "last_name":           user.last_name,
+        "city":                user.city,
+        "bio":                 user.bio,
         "profile_picture_url": user.profile_picture_url,
-        "created_at": user.created_at.isoformat() + "Z" if user.created_at else None,
+        "created_at":          user.created_at.isoformat() + "Z" if user.created_at else None,
     }
+
+    # private fields — only visible to self or accepted friends
     if is_self or is_friend:
-        data["email"] = user.email; data["phone"] = user.phone; data["birthdate"] = user.birthdate
+        data["email"] = user.email
+        data["phone"] = user.phone
+        data["birthdate"] = user.birthdate
 
+    # friendship metadata
     if is_self:
-        data["friendship_status"] = "self"; data["friendship_direction"] = None; data["friendship_id"] = None
+        data["friendship_status"]    = "self"
+        data["friendship_direction"] = None
+        data["friendship_id"]        = None
     elif friendship:
-        data["friendship_status"] = friendship.status
+        data["friendship_status"]    = friendship.status
         data["friendship_direction"] = "outgoing" if friendship.requester_id == current_user_id else "incoming"
-        data["friendship_id"] = friendship.id
+        data["friendship_id"]        = friendship.id
     else:
-        data["friendship_status"] = "none"; data["friendship_direction"] = None; data["friendship_id"] = None
+        data["friendship_status"]    = "none"
+        data["friendship_direction"] = None
+        data["friendship_id"]        = None
 
-    events_created_count = Event.query.filter(Event.creator_id == user_id).count()
-    today = datetime.utcnow().date()
-    all_events = Event.query.all()
-    participated_all = [e for e in all_events if user_id in [p.id for p in e.participants]]
-
-    def _is_past(e):
-        try:
-            return datetime.strptime(e.date, "%Y-%m-%d").date() <= today
-        except (ValueError, TypeError):
-            return False
-
-    participated = [e for e in participated_all if _is_past(e)]
-    events_participated_count = len(participated)
-
-    window_start = today - timedelta(weeks=4)
-    recent_count = 0
-    for e in participated:
-        try:
-            event_date = datetime.strptime(e.date, "%Y-%m-%d").date()
-            if window_start <= event_date <= today:
-                recent_count += 1
-        except (ValueError, TypeError):
-            continue
-
-    activity_avg_per_week = round(recent_count / 4.0, 2)
-    if activity_avg_per_week < 2: activity_level = "Peu actif"
-    elif activity_avg_per_week < 3: activity_level = "Actif"
-    else: activity_level = "Très actif"
-    activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
-
-    data["stats"] = {
-        "events_created_count": events_created_count,
-        "events_participated_count": events_participated_count,
-        "activity_avg_per_week": activity_avg_per_week,
-        "activity_level": activity_level,
-        "activity_percent": activity_percent,
-    }
+    data["stats"] = _compute_stats(user_id)
     return jsonify(data), 200
 
 
@@ -801,7 +874,8 @@ def mark_chat_room_read(room_id):
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
     return jsonify({
-        "msg": "Room marked as read", "room_id": room_id,
+        "msg": "Room marked as read",
+        "room_id": room_id,
         "last_read_at": membership.last_read_at.isoformat() + "Z",
     }), 200
 
@@ -831,17 +905,14 @@ def create_or_get_dm():
         return jsonify({"msg": "You can only DM accepted friends"}), 403
 
     user_a, user_b = sorted([current_user_id, target_id])
-
     room = ChatRoom.query.filter_by(type="dm", user_a_id=user_a, user_b_id=user_b).first()
     if room:
-        return jsonify({"msg": "DM already exists",
-                        "room": room.serialize(current_user_id=current_user_id)}), 200
+        return jsonify({"msg": "DM already exists", "room": room.serialize(current_user_id=current_user_id)}), 200
 
     room = ChatRoom(type="dm", user_a_id=user_a, user_b_id=user_b)
-    db.session.add(room); db.session.commit()
-
-    return jsonify({"msg": "DM created",
-                    "room": room.serialize(current_user_id=current_user_id)}), 201
+    db.session.add(room)
+    db.session.commit()
+    return jsonify({"msg": "DM created", "room": room.serialize(current_user_id=current_user_id)}), 201
 
 
 @api.route('/chat/search', methods=['GET'])
@@ -861,8 +932,7 @@ def chat_search():
             continue
         if current_user_id not in [p.id for p in r.event.participants]:
             continue
-        title = (r.event.title or "").lower()
-        if q_low in title:
+        if q_low in (r.event.title or "").lower():
             event_rooms.append(r.serialize(current_user_id=current_user_id))
 
     friendships = Friendship.query.filter(
@@ -875,16 +945,14 @@ def chat_search():
         other = f.addressee if f.requester_id == current_user_id else f.requester
         if not other:
             continue
-        email = (other.email or "").lower()
-        username = (other.username or "").lower()
-        if q_low not in email and q_low not in username:
+        if q_low not in (other.email or "").lower() and q_low not in (other.username or "").lower():
             continue
-
         ua, ub = sorted([current_user_id, other.id])
         dm = ChatRoom.query.filter_by(type="dm", user_a_id=ua, user_b_id=ub).first()
         friends.append({
             "user": {
-                "id": other.id, "email": other.email,
+                "id": other.id,
+                "email": other.email,
                 "username": other.username,
                 "profile_picture_url": other.profile_picture_url,
             },
@@ -906,7 +974,8 @@ def list_room_messages(room_id):
 
     messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
     return jsonify({
-        "room_id": room.id, "type": room.type,
+        "room_id": room.id,
+        "type": room.type,
         "messages": [m.serialize() for m in messages],
     }), 200
 
@@ -977,10 +1046,6 @@ def edit_room_message(room_id, msg_id):
     return jsonify({"msg": "Message updated", "message": msg.serialize()}), 200
 
 
-# ---------- NEW: SOFT-DELETE A MESSAGE ----------
-# Solo el sender puede borrar su propio mensaje. Sin ventana de tiempo.
-# Marca deleted=True y limpia text/media. La fila se queda para preservar
-# la posición temporal en el thread (UI muestra "Mensaje eliminado").
 @api.route('/chat/rooms/<int:room_id>/messages/<int:msg_id>', methods=['DELETE'])
 @jwt_required()
 def delete_room_message(room_id, msg_id):
@@ -1008,6 +1073,7 @@ def delete_room_message(room_id, msg_id):
 
 
 # ---------- LEGACY: event chat shortcuts ----------
+
 @api.route('/events/<int:event_id>/chat/messages', methods=['GET'])
 @jwt_required()
 def list_event_messages(event_id):
@@ -1021,7 +1087,8 @@ def list_event_messages(event_id):
     room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
     if not room:
         room = ChatRoom(type="event", event_id=event_id)
-        db.session.add(room); db.session.commit()
+        db.session.add(room)
+        db.session.commit()
 
     messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
     return jsonify({"room_id": room.id, "messages": [m.serialize() for m in messages]}), 200
@@ -1050,7 +1117,8 @@ def post_event_message(event_id):
     room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
     if not room:
         room = ChatRoom(type="event", event_id=event_id)
-        db.session.add(room); db.session.flush()
+        db.session.add(room)
+        db.session.flush()
 
     msg = ChatMessage(
         room_id=room.id, sender_id=current_user_id,
@@ -1124,5 +1192,6 @@ def delete_notification(notif_id):
     if n.user_id != current_user_id:
         return jsonify({"msg": "Not your notification"}), 403
 
-    db.session.delete(n); db.session.commit()
+    db.session.delete(n)
+    db.session.commit()
     return jsonify({"msg": "Notification deleted"}), 200

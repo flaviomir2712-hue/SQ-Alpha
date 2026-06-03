@@ -10,12 +10,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 db = SQLAlchemy()
 
-# ── Association table for event participants (accepted only) ─────────
+# ── Association table for event participants ─────────────
+# rsvp: NULL (no answer yet) | 'going' | 'maybe' | 'not_going'
 event_participants = Table(
     "event_participants",
     db.metadata,
     Column("event_id", ForeignKey("event.id"), primary_key=True),
     Column("user_id",  ForeignKey("user.id"),  primary_key=True),
+    Column("rsvp",     String(20), nullable=True, default=None),
 )
 
 
@@ -94,6 +96,25 @@ class Event(db.Model):
     )
 
     def serialize(self, current_user_id=None):
+        # Build a lookup of rsvp values from the association table
+        from sqlalchemy import text
+        rsvp_map = {}
+        rows = db.session.execute(
+            text("SELECT user_id, rsvp FROM event_participants WHERE event_id = :eid"),
+            {"eid": self.id}
+        ).fetchall()
+        for row in rows:
+            rsvp_map[row[0]] = row[1]
+
+        participants_data = [
+            {
+                "id":    p.id,
+                "email": p.email,
+                "rsvp":  rsvp_map.get(p.id),
+            }
+            for p in self.participants
+        ]
+
         data = {
             "id":                 self.id,
             "title":              self.title,
@@ -106,27 +127,14 @@ class Event(db.Model):
             "image":              self.image,
             "creator_id":         self.creator_id,
             "creator_email":      self.creator.email,
-            "participants":       [{"id": p.id, "email": p.email} for p in self.participants],
+            "participants":       participants_data,
             "participants_count": len(self.participants),
-            "pending_invitations": [
-                {"id": inv.id, "user_id": inv.user_id,
-                 "user_email": inv.user.email if inv.user else None}
-                for inv in (self.invitations or [])
-            ],
-            "pending_invitations_count": len(self.invitations or []),
-            "created_at":         self.created_at.isoformat() + "Z" if self.created_at else None,
+            "created_at":         self.created_at.isoformat() if self.created_at else None,
         }
+
         if current_user_id is not None:
-            if current_user_id == self.creator_id:
-                data["my_status"] = "creator"
-            elif current_user_id in [p.id for p in self.participants]:
-                data["my_status"] = "accepted"
-            elif any(inv.user_id == current_user_id for inv in (self.invitations or [])):
-                data["my_status"] = "pending"
-            else:
-                data["my_status"] = "none"
-            my_inv = next((inv for inv in (self.invitations or []) if inv.user_id == current_user_id), None)
-            data["my_invitation_id"] = my_inv.id if my_inv else None
+            data["my_rsvp"] = rsvp_map.get(current_user_id)
+
         return data
 
 

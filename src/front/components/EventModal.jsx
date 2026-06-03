@@ -498,13 +498,21 @@ export const EventModal = ({
     }
   };
 
+  const [pendingInviteIds, setPendingInviteIds] = useState([]);
+
   const handleInviteNow = async (friendUserId) => {
+    setPendingInviteIds((prev) => [...prev, friendUserId]);
     try {
       const data = await apiInviteFriend(eventId, friendUserId);
       setEventData(data.event);
       showToast("Friend invited");
       onSaved(data.event);
     } catch (e) {
+      // if already a participant the backend returns 409 — keep pending state
+      // for any other error, remove from pending so user can retry
+      if (!e.message?.toLowerCase().includes("already")) {
+        setPendingInviteIds((prev) => prev.filter((id) => id !== friendUserId));
+      }
       showToast(e.message, "danger");
     }
   };
@@ -869,13 +877,19 @@ export const EventModal = ({
                                 <div style={avatarStyle(u.id)}>{initials(u.email)}</div>
                                 <span>{u.email}</span>
                               </div>
-                              <Button
-                                size="sm"
-                                variant="primary"
-                                onClick={() => handleInviteNow(u.id)}
-                              >
-                                <FiUserPlus className="me-1" /> Invite
-                              </Button>
+                              {pendingInviteIds.includes(u.id) ? (
+                                <Button size="sm" variant="secondary" disabled>
+                                  <FiClock className="me-1" /> Pending
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="primary"
+                                  onClick={() => handleInviteNow(u.id)}
+                                >
+                                  <FiUserPlus className="me-1" /> Invite
+                                </Button>
+                              )}
                             </ListGroup.Item>
                           ))}
                         </ListGroup>

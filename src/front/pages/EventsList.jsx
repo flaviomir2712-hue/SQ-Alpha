@@ -21,12 +21,15 @@ import {
   FiSearch,
   FiPlus,
   FiImage,
+  FiCheckCircle,
+  FiHelpCircle,
+  FiXCircle,
 } from "react-icons/fi";
 
 import { EventModal } from "../components/EventModal";
 
 // =============================================================
-// INLINE API + STYLES (dark mode, identical to Friends/Profile)
+// INLINE API + STYLES
 // =============================================================
 const API = import.meta.env.VITE_BACKEND_URL;
 const authHeaders = () => ({
@@ -35,14 +38,19 @@ const authHeaders = () => ({
 });
 const handle = async (res) => {
   const data = await res.json();
-  console.log(data);
-  
   if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
   return data;
 };
 const apiListEvents = () =>
   fetch(`${API}/api/events`, { headers: authHeaders() }).then(handle);
-// .catch(() => ({}))
+
+const apiRsvp = (eventId, rsvp) =>
+  fetch(`${API}/api/events/${eventId}/rsvp`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ rsvp }),
+  }).then(handle);
+
 const CSS = `
 .events-list-page {
   min-height: 100vh;
@@ -62,7 +70,7 @@ const CSS = `
   transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
   cursor: pointer;
   overflow: hidden;
-  bottom: 0;
+  bottom: 0px;
 }
 .event-card:hover {
   border-color: #3a3f55;
@@ -99,17 +107,99 @@ const CSS = `
   display: flex; align-items: center; gap: 0.35rem;
   color: #adb5bd; font-size: 0.85rem;
 }
+
+/* ── RSVP bar ── */
+.rsvp-bar {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #262a36;
+}
+.rsvp-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 2px;
+  border-radius: 8px;
+  border: 1px solid #262a36;
+  background: #0f111a;
+  color: #6c757d;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.rsvp-btn:hover { background: #1e2230; color: #e9ecef; }
+.rsvp-btn.active-going     { background: rgba(34,211,238,0.15); border-color: #22d3ee; color: #22d3ee; }
+.rsvp-btn.active-maybe     { background: rgba(250,204,21,0.15);  border-color: #facc15; color: #facc15; }
+.rsvp-btn.active-not_going { background: rgba(244,63,94,0.15);   border-color: #f43f5e; color: #f43f5e; }
+.rsvp-btn:disabled { opacity: 0.45; pointer-events: none; }
 `;
+
+// =============================================================
+// RSVP OPTIONS
+// =============================================================
+const RSVP_OPTIONS = [
+  { value: "going",     label: "Going",     icon: <FiCheckCircle size={12} /> },
+  { value: "maybe",     label: "Maybe",     icon: <FiHelpCircle  size={12} /> },
+  { value: "not_going", label: "Not going", icon: <FiXCircle     size={12} /> },
+];
+
+// =============================================================
+// RSVP BAR — self-contained, stops click propagation so it
+// doesn't open the modal when the user clicks a button
+// =============================================================
+const RsvpBar = ({ eventId, initialRsvp, onRsvpChange }) => {
+  const [rsvp, setRsvp]     = useState(initialRsvp || null);
+  const [saving, setSaving] = useState(false);
+
+  const handleClick = async (e, value) => {
+    e.stopPropagation(); // prevent card click → modal open
+    if (saving) return;
+
+    // clicking the active button clears it (toggle)
+    const next = rsvp === value ? null : value;
+    setSaving(true);
+    try {
+      await apiRsvp(eventId, next);
+      setRsvp(next);
+      if (onRsvpChange) onRsvpChange(eventId, next);
+    } catch {
+      // silently ignore — the button just stays where it was
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rsvp-bar" onClick={(e) => e.stopPropagation()}>
+      {RSVP_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          className={`rsvp-btn${rsvp === opt.value ? ` active-${opt.value}` : ""}`}
+          disabled={saving}
+          onClick={(e) => handleClick(e, opt.value)}
+        >
+          {opt.icon} {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+};
 
 // =============================================================
 // MAIN
 // =============================================================
 export const EventsList = () => {
-  const [events, setEvents]     = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState(null);
-  const [tab, setTab]           = useState("all");
-  const [searchQ, setSearchQ]   = useState("");
+  const [events, setEvents]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState(null);
+  const [tab, setTab]         = useState("all");
+  const [searchQ, setSearchQ] = useState("");
 
   // EventModal
   const [modalOpen, setModalOpen]         = useState(false);
@@ -123,7 +213,7 @@ export const EventsList = () => {
     setError(null);
     try {
       const data = await apiListEvents();
-      setEvents(data);
+      setEvents(Array.isArray(data) ? data : []);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -133,24 +223,18 @@ export const EventsList = () => {
 
   useEffect(() => { reload(); }, []);
 
-  const openEvent = (id) => {
-    setActiveEventId(id);
-    setModalOpen(true);
-  };
+  const openEvent  = (id) => { setActiveEventId(id); setModalOpen(true); };
+  const openCreate = ()    => { setActiveEventId(null); setModalOpen(true); };
+  const closeModal = ()    => { setModalOpen(false); setActiveEventId(null); };
 
-  const openCreate = () => {
-    setActiveEventId(null);
-    setModalOpen(true);
-  };
-
-  const closeModal = () => {
-    setModalOpen(false);
-    setActiveEventId(null);
+  // Update rsvp on a single event in state without a full reload
+  const handleRsvpChange = (eventId, newRsvp) => {
+    setEvents((prev) =>
+      prev.map((ev) => ev.id === eventId ? { ...ev, my_rsvp: newRsvp } : ev)
+    );
   };
 
   // ---- derived ----
-  // Un event ne compte dans "participated" que s'il est deja passe.
-  // (Coherent avec /profile/me cote backend.)
   const isPast = (e) => {
     if (!e?.date) return false;
     const d = new Date(e.date);
@@ -163,14 +247,8 @@ export const EventsList = () => {
 
   const filtered = useMemo(() => {
     let list = events;
-    if (tab === "created") {
-      list = list.filter((e) => e.creator_id === myId);
-    }
-    if (tab === "participated") {
-      // Un event compte dans "participated" des qu'il est passe,
-      // peu importe que je sois createur ou simple invite.
-      list = list.filter((e) => isPast(e));
-    }
+    if (tab === "created")      list = list.filter((e) => e.creator_id === myId);
+    if (tab === "participated") list = list.filter((e) => isPast(e));
 
     const q = searchQ.trim().toLowerCase();
     if (q) {
@@ -189,11 +267,18 @@ export const EventsList = () => {
     participated: events.filter((e) => isPast(e)).length,
   }), [events, myId]);
 
+  // Does the current user participate in this event (but is NOT the creator)?
+  const isInvitedParticipant = (e) =>
+    e.creator_id !== myId &&
+    Array.isArray(e.participants) &&
+    e.participants.some((p) => p.id === myId);
+
   return (
     <div className="events-list-page">
       <style>{CSS}</style>
 
       <Container className="py-4">
+
         {/* HEADER */}
         <div className="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
           <div>
@@ -238,8 +323,8 @@ export const EventsList = () => {
 
         {/* TABS */}
         <Tabs activeKey={tab} onSelect={(k) => setTab(k)} className="mb-3" fill>
-          <Tab eventKey="all" title={<span>All <Badge bg="secondary">{counts.all}</Badge></span>} />
-          <Tab eventKey="created" title={<span>Created <Badge bg="secondary">{counts.created}</Badge></span>} />
+          <Tab eventKey="all"          title={<span>All          <Badge bg="secondary">{counts.all}</Badge></span>} />
+          <Tab eventKey="created"      title={<span>Created      <Badge bg="secondary">{counts.created}</Badge></span>} />
           <Tab eventKey="participated" title={<span>Participated <Badge bg="secondary">{counts.participated}</Badge></span>} />
         </Tabs>
 
@@ -273,6 +358,7 @@ export const EventsList = () => {
                       <FiImage size={42} />
                     </div>
                   )}
+
                   <Card.Body>
                     <div className="d-flex justify-content-between align-items-start gap-2 mb-2">
                       <strong className="text-light text-truncate">
@@ -284,6 +370,7 @@ export const EventsList = () => {
                         <Badge bg="secondary">Invited</Badge>
                       )}
                     </div>
+
                     <div className="event-meta mb-1">
                       <FiCalendar /> {e.date} <FiClock className="ms-2" /> {e.time}
                     </div>
@@ -293,8 +380,17 @@ export const EventsList = () => {
                       </div>
                     )}
                     <div className="event-meta">
-                      <FiUsers /> {e.participants_count} participant{e.participants_count > 1 ? "s" : ""}
+                      <FiUsers /> {e.participants_count} participant{e.participants_count !== 1 ? "s" : ""}
                     </div>
+
+                    {/* RSVP bar — only shown to invited participants, not the creator */}
+                    {isInvitedParticipant(e) && (
+                      <RsvpBar
+                        eventId={e.id}
+                        initialRsvp={e.my_rsvp}
+                        onRsvpChange={handleRsvpChange}
+                      />
+                    )}
                   </Card.Body>
                 </Card>
               </Col>

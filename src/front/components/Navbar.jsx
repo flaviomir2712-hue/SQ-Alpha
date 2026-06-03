@@ -522,7 +522,7 @@ export const Navbar = () => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
         dispatch({ type: "logout" });
-        navigate("/register", { replace: true });
+        navigate("/login", { replace: true });
     };
 
     // =====================================================
