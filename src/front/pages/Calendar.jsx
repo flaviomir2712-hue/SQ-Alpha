@@ -1,0 +1,355 @@
+import { useEffect, useMemo, useState } from "react";
+import { Spinner, Alert } from "react-bootstrap";
+import { FiChevronLeft, FiChevronRight, FiCalendar, FiClock, FiMapPin, FiPlus } from "react-icons/fi";
+import { EventModal } from "../components/EventModal";
+
+// ─── API ─────────────────────────────────────────────────────────────────────
+const API = import.meta.env.VITE_BACKEND_URL;
+const authHeaders = () => ({
+  "Content-Type": "application/json",
+  Authorization: `Bearer ${localStorage.getItem("token")}`,
+});
+const handle = async (res) => {
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
+  return data;
+};
+const apiListEvents = () =>
+  fetch(`${API}/api/events`, { headers: authHeaders() }).then(handle);
+
+// ─── COLOUR PALETTE (cycles per event, like the screenshot) ──────────────────
+const PALETTE = ["#a855f7", "#f97316", "#22d3ee", "#34d399", "#f43f5e", "#facc15", "#60a5fa"];
+const eventColor = (idx) => PALETTE[idx % PALETTE.length];
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+const DAYS   = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["January","February","March","April","May","June",
+                "July","August","September","October","November","December"];
+
+function buildCells(year, month) {
+  const firstDay    = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrev  = new Date(year, month, 0).getDate();
+  const cells = [];
+
+  for (let i = firstDay - 1; i >= 0; i--)
+    cells.push({ day: daysInPrev - i, current: false, date: null });
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const mm = String(month + 1).padStart(2, "0");
+    const dd = String(d).padStart(2, "0");
+    cells.push({ day: d, current: true, date: `${year}-${mm}-${dd}` });
+  }
+
+  const remaining = 42 - cells.length;
+  for (let d = 1; d <= remaining; d++)
+    cells.push({ day: d, current: false, date: null });
+
+  return cells;
+}
+
+// ─── COMPONENT ────────────────────────────────────────────────────────────────
+export const Calendar = () => {
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+
+  const [viewYear, setViewYear]         = useState(today.getFullYear());
+  const [viewMonth, setViewMonth]       = useState(today.getMonth());
+  const [events, setEvents]             = useState([]);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState(null);
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [modalOpen, setModalOpen]       = useState(false);
+  const [activeEventId, setActiveEventId] = useState(null);
+
+  const currentUser = JSON.parse(localStorage.getItem("user") || "null");
+
+  const reload = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await apiListEvents();
+      setEvents(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { reload(); }, []);
+
+  const cells = useMemo(() => buildCells(viewYear, viewMonth), [viewYear, viewMonth]);
+
+  const { byDate, colorMap } = useMemo(() => {
+    const byDate = {};
+    const colorMap = {};
+    let idx = 0;
+    for (const ev of events) {
+      if (!ev.date) continue;
+      if (!byDate[ev.date]) byDate[ev.date] = [];
+      byDate[ev.date].push(ev);
+      if (colorMap[ev.id] === undefined) colorMap[ev.id] = idx++;
+    }
+    return { byDate, colorMap };
+  }, [events]);
+
+  const prevMonth = () => {
+    if (viewMonth === 0) { setViewYear(y => y - 1); setViewMonth(11); }
+    else setViewMonth(m => m - 1);
+  };
+  const nextMonth = () => {
+    if (viewMonth === 11) { setViewYear(y => y + 1); setViewMonth(0); }
+    else setViewMonth(m => m + 1);
+  };
+
+  const openEvent  = (id) => { setActiveEventId(id); setModalOpen(true); };
+  const openCreate = ()    => { setActiveEventId(null); setModalOpen(true); };
+  const closeModal = ()    => { setModalOpen(false); setActiveEventId(null); };
+
+  const selectedEvents = selectedDate ? (byDate[selectedDate] || []) : [];
+
+  return (
+    <div style={S.page}>
+      <style>{CSS}</style>
+
+      {/* HEADER */}
+      <div style={S.header}>
+        <div style={S.headerRow}>
+          <FiCalendar size={22} color="#6366f1" />
+          <h1 style={S.title}>Calendar</h1>
+        </div>
+        <p style={S.subtitle}>All your events at a glance</p>
+      </div>
+
+      {error && (
+        <div style={{ padding: "0 1rem" }}>
+          <Alert variant="danger" onClose={() => setError(null)} dismissible>{error}</Alert>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={S.center}><Spinner animation="border" variant="light" /></div>
+      ) : (
+        <div style={S.wrap}>
+
+          {/* MONTH NAV */}
+          <div style={S.monthNav}>
+            <button style={S.navBtn} onClick={prevMonth}><FiChevronLeft size={20} /></button>
+            <span style={S.monthLabel}>{MONTHS[viewMonth]} {viewYear}</span>
+            <button style={S.navBtn} onClick={nextMonth}><FiChevronRight size={20} /></button>
+          </div>
+
+          {/* DAY NAMES */}
+          <div style={S.dayNames}>
+            {DAYS.map(d => <div key={d} style={S.dayName}>{d}</div>)}
+          </div>
+
+          {/* GRID */}
+          <div style={S.grid}>
+            {cells.map((cell, i) => {
+              const evs        = cell.date ? (byDate[cell.date] || []) : [];
+              const isToday    = cell.date === todayStr;
+              const isSelected = cell.date === selectedDate;
+
+              return (
+                <div
+                  key={i}
+                  className={[
+                    "cal-cell",
+                    !cell.current  ? "cal-faded"   : "",
+                    isToday        ? "cal-today"   : "",
+                    isSelected     ? "cal-selected": "",
+                  ].join(" ")}
+                  onClick={() => {
+                    if (!cell.current || !cell.date) return;
+                    setSelectedDate(cell.date === selectedDate ? null : cell.date);
+                  }}
+                >
+                  <span className={`cal-num${isToday ? " cal-num-today" : ""}`}>
+                    {cell.day}
+                  </span>
+
+                  {evs.slice(0, 2).map(ev => (
+                    <div
+                      key={ev.id}
+                      className="cal-pill"
+                      style={{ borderLeftColor: eventColor(colorMap[ev.id]) }}
+                      onClick={(e) => { e.stopPropagation(); openEvent(ev.id); }}
+                    >
+                      <span className="cal-pill-title">{ev.title || "(untitled)"}</span>
+                      <span className="cal-pill-time">{ev.time}</span>
+                    </div>
+                  ))}
+
+                  {evs.length > 2 && (
+                    <span className="cal-more">+{evs.length - 2} more</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* SELECTED DAY PANEL */}
+          {selectedDate && (
+            <div style={S.panel}>
+              <div style={S.panelHead}>
+                <span style={S.panelTitle}>
+                  {new Date(selectedDate + "T00:00:00").toLocaleDateString(undefined, {
+                    weekday: "long", month: "long", day: "numeric",
+                  })}
+                </span>
+                <button style={S.addBtn} onClick={openCreate}>
+                  <FiPlus size={14} /> New event
+                </button>
+              </div>
+
+              {selectedEvents.length === 0 ? (
+                <p style={S.empty}>No events this day.</p>
+              ) : (
+                selectedEvents.map(ev => (
+                  <div
+                    key={ev.id}
+                    className="cal-event-row"
+                    style={{ ...S.eventRow, borderLeftColor: eventColor(colorMap[ev.id]) }}
+                    onClick={() => openEvent(ev.id)}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={S.eventTitle}>{ev.title || "(untitled)"}</div>
+                      <div style={S.eventMeta}>
+                        <FiClock size={11} />
+                        <span>{ev.time}</span>
+                        {ev.location && (
+                          <>
+                            <FiMapPin size={11} />
+                            <span style={S.loc}>{ev.location}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+        </div>
+      )}
+
+      <EventModal
+        show={modalOpen}
+        onHide={closeModal}
+        eventId={activeEventId}
+        prefillCoords={null}
+        currentUser={currentUser}
+        onSaved={reload}
+        onDeleted={reload}
+      />
+    </div>
+  );
+};
+
+export default Calendar;
+
+// ─── INLINE STYLES ────────────────────────────────────────────────────────────
+const S = {
+  page: {
+    minHeight: "100vh",
+    background: `
+      radial-gradient(1200px 600px at 10% -10%, rgba(99,102,241,0.15), transparent 60%),
+      radial-gradient(900px 500px at 100% 10%, rgba(236,72,153,0.10), transparent 60%),
+      #0b0d12`,
+    color: "#e9ecef",
+    paddingTop: 80,
+    paddingBottom: 100,
+  },
+  header:     { padding: "0 1.25rem 1rem" },
+  headerRow:  { display: "flex", alignItems: "center", gap: 10, marginBottom: 4 },
+  title:      { margin: 0, fontSize: "1.6rem", fontWeight: 700, color: "#fff" },
+  subtitle:   { margin: 0, color: "#6c757d", fontSize: "0.9rem" },
+  center:     { display: "flex", justifyContent: "center", paddingTop: 80 },
+  wrap:       { padding: "0 1rem" },
+  monthNav:   { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" },
+  navBtn:     { background: "#161922", border: "1px solid #262a36", color: "#e9ecef", borderRadius: 8, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center" },
+  monthLabel: { fontWeight: 700, fontSize: "1.1rem", color: "#fff" },
+  dayNames:   { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 },
+  dayName:    { textAlign: "center", fontSize: "0.72rem", fontWeight: 600, color: "#6c757d", textTransform: "uppercase", letterSpacing: "0.05em", padding: "4px 0" },
+  grid:       { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 },
+  panel:      { marginTop: "1rem", background: "#161922", border: "1px solid #262a36", borderRadius: 14, padding: "1rem" },
+  panelHead:  { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" },
+  panelTitle: { fontWeight: 700, color: "#fff", fontSize: "0.95rem" },
+  addBtn:     { background: "linear-gradient(135deg,#6366f1,#4f46e5)", border: "none", color: "#fff", borderRadius: 8, padding: "5px 12px", fontSize: "0.8rem", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 },
+  empty:      { color: "#6c757d", fontSize: "0.9rem", margin: 0 },
+  eventRow:   { display: "flex", alignItems: "flex-start", gap: 10, padding: "0.6rem 0.75rem", borderRadius: 10, cursor: "pointer", marginBottom: 4, borderLeft: "3px solid transparent", background: "#0f111a" },
+  eventTitle: { fontWeight: 600, color: "#e9ecef", fontSize: "0.9rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  eventMeta:  { display: "flex", alignItems: "center", gap: 4, color: "#6c757d", fontSize: "0.78rem", marginTop: 2 },
+  loc:        { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 120 },
+};
+
+// ─── CSS ──────────────────────────────────────────────────────────────────────
+const CSS = `
+.cal-cell {
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 4px 3px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+  overflow: hidden;
+}
+.cal-cell:hover { background: #161922; }
+.cal-faded { cursor: default; opacity: 0.3; }
+.cal-faded:hover { background: transparent; }
+.cal-today  { background: #1a1d2e; border-color: #6366f1 !important; }
+.cal-selected { background: #1e2230 !important; border-color: #a855f7 !important; }
+.cal-num {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-align: right;
+  padding-right: 3px;
+  margin-bottom: 3px;
+  line-height: 1;
+}
+.cal-num-today {
+  color: #6366f1 !important;
+  font-weight: 800;
+}
+.cal-pill {
+  display: flex;
+  flex-direction: column;
+  background: rgba(255,255,255,0.06);
+  border-left: 3px solid #a855f7;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin-bottom: 2px;
+  cursor: pointer;
+  overflow: hidden;
+  transition: background 0.12s;
+}
+.cal-pill:hover { background: rgba(255,255,255,0.12); }
+.cal-pill-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #e9ecef;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.cal-pill-time {
+  font-size: 0.62rem;
+  color: #9ca3af;
+  line-height: 1.2;
+}
+.cal-more {
+  font-size: 0.62rem;
+  color: #6c757d;
+  padding-left: 3px;
+  margin-top: 1px;
+}
+.cal-event-row { transition: background 0.12s; }
+.cal-event-row:hover { background: #1e2230 !important; }
+`;
