@@ -16,54 +16,114 @@
   cursor: crosshair;
 }
 
-/* Marker avatar (helper de MarkerAvatar.createMarkerAvatar) */
-.avatar-marker {
-  border-radius: 50%;
-  overflow: hidden;
-  border: 2px solid #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  position: relative;
+/* Leaflet wraps every divIcon in this — must not clip the pill/tooltip
+   that overflow above/below the avatar circle. */
+.marker-avatar-icon {
+  overflow: visible !important;
+  background: transparent !important;
+  border: none !important;
 }
-.avatar-marker img {
+
+/* ── Avatar circle ── */
+.avatar-marker {
+  position: relative;
+  border-radius: 50%;
+  overflow: visible;          /* allow pill + tooltip to escape the circle */
+  cursor: pointer;
+  /* dark background so the logo reads on any tile colour */
+  background: #0b0d12;
+}
+
+.avatar-marker > img {
   width: 100%;
   height: 100%;
+  border-radius: 50%;
   object-fit: cover;
   display: block;
+  /* single clean border — same as "variante actual" */
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
-/* Badge with the count of confirmed ("going") participants — drawn by
-   MarkerAvatar.createMarkerAvatar when goingCount > 0. */
-.avatar-marker-badge {
+/* Logo fallback: keep the dark bg visible as a circle behind the logo */
+.avatar-marker.has-logo > img {
+  object-fit: contain;
+  padding: 6px;
+  background: #0b0d12;
+  border-color: #ffffff55;
+}
+
+/* ── "N voy" pill BELOW the avatar (always visible when > 0) ── */
+.avatar-marker-going {
   position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 20px;
-  height: 20px;
-  border-radius: 999px;
+  bottom: -12px;
+  left: 50%;
+  transform: translateX(-50%);
   background: linear-gradient(135deg, #22d3ee, #4f46e5);
   color: #fff;
-  font-size: 0.65rem;
+  font-size: 0.68rem;
   font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 5px;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
   border: 2px solid #0b0d12;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-  line-height: 1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  line-height: 1.2;
+  z-index: 5;
 }
 
-/* Tooltip shown on marker hover */
-.sq-marker-tooltip {
-  background: #161922 !important;
-  color: #e9ecef !important;
-  border: 1px solid #262a36 !important;
-  border-radius: 8px !important;
-  padding: 0.35rem 0.65rem !important;
-  font-size: 0.82rem !important;
-  font-weight: 500 !important;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4) !important;
+/* ── Hover tooltip: title · days · time ── */
+.avatar-marker-tip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #161922;
+  color: #e9ecef;
+  border: 1px solid #262a36;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 10;
 }
-.sq-marker-tooltip::before {
-  border-top-color: #161922 !important;
+
+/* speech-bubble arrow */
+.avatar-marker-tip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #262a36;
+}
+.avatar-marker-tip::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #161922;
+  z-index: 1;
+  margin-top: -1px;
+}
+
+.avatar-marker:hover .avatar-marker-tip {
+  opacity: 1;
+}
+
+/* Touch devices: suppress tooltip on tap — users go straight to modal */
+@media (hover: none) {
+  .avatar-marker:hover .avatar-marker-tip {
+    opacity: 0;
+  }
 }
