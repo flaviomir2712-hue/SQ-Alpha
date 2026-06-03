@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { MapContainer, TileLayer, Marker } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Tooltip } from "react-leaflet";
 import { Container, Spinner, Alert } from "react-bootstrap";
 import "leaflet/dist/leaflet.css";
 
@@ -197,11 +197,19 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
               icon={createMarkerAvatar(
                 pickMarkerImage(event),
                 56,
-                event.going_count || 0,
-                formatTooltip(event)
+                event.going_count || 0
               )}
               eventHandlers={{ click: () => handleMarkerClick(event) }}
-            />
+            >
+              <Tooltip
+                direction="top"
+                offset={[0, -56]}
+                opacity={0.95}
+                className="sq-marker-tooltip"
+              >
+                {formatTooltip(event)}
+              </Tooltip>
+            </Marker>
           ))}
         </MapContainer>
       </div>
