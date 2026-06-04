@@ -616,7 +616,16 @@ export const Navbar = () => {
         e.target.value = "";
         if (!file || !activeRoom) return;
         try {
-            const dataUrl = await fileToDataURL(file);
+            // Compress big phone shots before sending — a 5 MB iPhone
+            // photo becomes ~250 KB after compressImage("chat").
+            let dataUrl;
+            try {
+                const { compressImage } = await import("../utils/uploadImage");
+                dataUrl = await compressImage(file, "chat");
+            } catch (compressErr) {
+                console.error("Compression failed, sending raw:", compressErr);
+                dataUrl = await fileToDataURL(file);
+            }
             await sendRoomMessage(activeRoom.id, {
                 media_url: dataUrl,
                 media_type: "image",
@@ -795,9 +804,10 @@ export const Navbar = () => {
                     <Nav className="d-flex flex-row align-items-center gap-2 gap-md-3">
                         {isLogged ? (
                             <>
-                                <span className="sq-hide-xs">
-                                    <NotificationBell />
-                                </span>
+                                {/* NotificationBell is now always visible — on
+                                    mobile too. Was previously hidden behind
+                                    the `sq-hide-xs` wrapper. */}
+                                <NotificationBell />
 
                                 {/* FRIENDS — promoted out of the hamburger to a top-level icon */}
                                 <Link to="/friends" className="text-decoration-none">

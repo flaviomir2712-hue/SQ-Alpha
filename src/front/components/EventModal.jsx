@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Modal,
   Button,
@@ -387,6 +388,36 @@ const reverseGeocode = async (lat, lng) => {
   }
 };
 
+// Forward geocode (address → suggestions). Used for the autocomplete in
+// the location input. Returns up to 5 hits with display_name + lat/lng.
+// Nominatim asks users to throttle and identify the app via User-Agent;
+// the browser sets one automatically — keeping calls debounced is what
+// matters most.
+const searchAddress = async (query) => {
+  if (!query || query.trim().length < 3) return [];
+  try {
+    const params = new URLSearchParams({
+      format: "json",
+      q: query.trim(),
+      limit: "5",
+      addressdetails: "0",
+    });
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?${params.toString()}`,
+      { headers: { "Accept": "application/json" } }
+    );
+    if (!res.ok) return [];
+    const arr = await res.json();
+    return arr.map((item) => ({
+      label: item.display_name,
+      lat: parseFloat(item.lat),
+      lng: parseFloat(item.lon),
+    }));
+  } catch {
+    return [];
+  }
+};
+
 // =============================================================
 // MAIN
 // =============================================================
@@ -407,6 +438,7 @@ export const EventModal = ({
   onSaved = () => {},
   onDeleted = () => {},
 }) => {
+  const navigate = useNavigate();
   const isEditMode = !!eventId;
   const [tab, setTab] = useState("details");
 
@@ -452,6 +484,18 @@ export const EventModal = ({
 
   const fileInputRef = useRef(null);
 
+  // Location autocomplete state ----------------------------------
+  // The autocomplete search is now driven by the input's own onChange
+  // (`handleLocationChange`), NOT by a useEffect on `form.location`.
+  // That way the dropdown only opens when the user actively types in
+  // the bar — hydrating an existing event, picking a suggestion, or
+  // the reverse-geocode after a map click all bypass the search
+  // because they go through setForm directly, not the input event.
+  const [addressSuggestions, setAddressSuggestions] = useState([]);
+  const [showAddressDropdown, setShowAddressDropdown] = useState(false);
+  const [addressSearching, setAddressSearching] = useState(false);
+  const locationDebounceRef = useRef(null);
+
   // =====================================================
   // LOAD on open
   // =====================================================
@@ -484,13 +528,79 @@ export const EventModal = ({
       setEventData(null);
 
       if (prefillCoords?.latitude && prefillCoords?.longitude) {
+        // reverseGeocode goes through setForm directly — no input
+        // event, so the autocomplete is NOT triggered (clean).
         reverseGeocode(prefillCoords.latitude, prefillCoords.longitude).then((addr) => {
           if (addr) setForm((f) => ({ ...f, location: addr }));
         });
       }
     }
+    // Make sure any stale dropdown is cleared when the modal reopens.
+    setAddressSuggestions([]);
+    setShowAddressDropdown(false);
+    setAddressSearching(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, eventId]);
+
+  // Cleanup the pending debounce when the modal closes so an in-flight
+  // search doesn't pop the dropdown after the user already left.
+  useEffect(() => {
+    if (show) return;
+    if (locationDebounceRef.current) {
+      clearTimeout(locationDebounceRef.current);
+      locationDebounceRef.current = null;
+    }
+  }, [show]);
+
+  // Address input typing handler. Replaces the previous useEffect-based
+  // search so the dropdown only opens when the user is actually typing
+  // in the bar — never on hydrate, reverseGeocode, or suggestion pick.
+  const handleLocationChange = (e) => {
+    const newValue = e.target.value;
+    setForm((f) => ({ ...f, location: newValue }));
+
+    // Cancel any previous debounce — last keystroke wins.
+    if (locationDebounceRef.current) {
+      clearTimeout(locationDebounceRef.current);
+      locationDebounceRef.current = null;
+    }
+
+    const q = newValue.trim();
+    if (q.length < 3) {
+      setAddressSuggestions([]);
+      setShowAddressDropdown(false);
+      setAddressSearching(false);
+      return;
+    }
+
+    setAddressSearching(true);
+    locationDebounceRef.current = setTimeout(async () => {
+      const results = await searchAddress(q);
+      setAddressSuggestions(results);
+      setShowAddressDropdown(results.length > 0);
+      setAddressSearching(false);
+      locationDebounceRef.current = null;
+    }, 400);
+  };
+
+  // User picked one of the autocomplete suggestions — commit lat/lng so
+  // the new marker lands exactly on the address they chose.
+  const handlePickAddress = (sug) => {
+    setForm((f) => ({
+      ...f,
+      location:  sug.label,
+      latitude:  sug.lat,
+      longitude: sug.lng,
+    }));
+    setAddressSuggestions([]);
+    setShowAddressDropdown(false);
+    setAddressSearching(false);
+    // Cancel any in-flight search so it doesn't reopen the dropdown.
+    if (locationDebounceRef.current) {
+      clearTimeout(locationDebounceRef.current);
+      locationDebounceRef.current = null;
+    }
+  };
 
   const hydrate = async () => {
     setLoading(true);
@@ -567,12 +677,17 @@ export const EventModal = ({
   const handleImage = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 1.5 * 1024 * 1024) {
-      showToast("Image too large (max 1.5 MB)", "danger");
-      return;
-    }
     try {
-      const b64 = await fileToBase64(file);
+      // Event cover photos use the "event" preset (maxSide 1600). A 25 MB
+      // shot from a phone comes out around 300-500 KB after compression.
+      let b64;
+      try {
+        const { compressImage } = await import("../utils/uploadImage");
+        b64 = await compressImage(file, "event");
+      } catch (compressErr) {
+        console.error("Compression failed, falling back to raw base64:", compressErr);
+        b64 = await fileToBase64(file);
+      }
       setForm((f) => ({ ...f, image: b64 }));
       if (isEditMode) {
         const data = await apiUpdateEvent(eventId, { image: b64 });
@@ -860,12 +975,17 @@ export const EventModal = ({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (file.size > 1.5 * 1024 * 1024) {
-      showToast("Image too large (max 1.5 MB)", "danger");
-      return;
-    }
     try {
-      const dataUrl = await fileToBase64(file);
+      // Chat photos use the "chat" preset (maxSide 1280) — smaller than
+      // event covers because they don't need the same detail.
+      let dataUrl;
+      try {
+        const { compressImage } = await import("../utils/uploadImage");
+        dataUrl = await compressImage(file, "chat");
+      } catch (compressErr) {
+        console.error("Compression failed, sending raw:", compressErr);
+        dataUrl = await fileToBase64(file);
+      }
       await apiPostMessage(eventId, {
         media_url: dataUrl,
         media_type: "image",
@@ -1127,19 +1247,85 @@ export const EventModal = ({
                   />
                 </Col>
 
-                <Col xs={12}>
+                <Col xs={12} style={{ position: "relative" }}>
                   <Form.Label><FiMapPin className="me-1" /> Location</Form.Label>
                   <Form.Control
                     name="location"
                     value={form.location}
-                    onChange={handleField}
-                    placeholder="Address"
+                    onChange={handleLocationChange}
+                    onBlur={() => {
+                      // Delay closing so click on a suggestion can fire first.
+                      setTimeout(() => setShowAddressDropdown(false), 150);
+                    }}
+                    placeholder="Empieza a escribir la dirección..."
+                    autoComplete="off"
                     disabled={isEditMode && !isCreator}
                   />
-                  {form.latitude != null && form.longitude != null && (
-                    <small className="text-secondary">
+                  {/* Autocomplete dropdown */}
+                  {showAddressDropdown && addressSuggestions.length > 0 && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        zIndex: 1100,
+                        left: 12, right: 12,
+                        marginTop: 2,
+                        background: "#0f111a",
+                        border: "1px solid #2a2f42",
+                        borderRadius: 8,
+                        maxHeight: 240,
+                        overflowY: "auto",
+                        boxShadow: "0 8px 20px rgba(0,0,0,0.5)",
+                      }}
+                    >
+                      {addressSuggestions.map((sug, i) => (
+                        <div
+                          key={`${sug.lat},${sug.lng},${i}`}
+                          onMouseDown={(e) => {
+                            // onMouseDown fires before onBlur — so we can
+                            // commit the pick before the input closes us.
+                            e.preventDefault();
+                            handlePickAddress(sug);
+                          }}
+                          style={{
+                            padding: "8px 10px",
+                            cursor: "pointer",
+                            color: "#e9ecef",
+                            fontSize: "0.85rem",
+                            borderBottom: i < addressSuggestions.length - 1 ? "1px solid #2a2f42" : "none",
+                            transition: "background 0.12s",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e2230"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                        >
+                          <FiMapPin className="me-2" style={{ color: "#6366f1" }} />
+                          {sug.label}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {addressSearching && (
+                    <small className="text-secondary d-block mt-1">Buscando direcciones...</small>
+                  )}
+                  {form.latitude != null && form.longitude != null && !addressSearching && (
+                    <small className="text-secondary d-block mt-1">
                       {Number(form.latitude).toFixed(5)}, {Number(form.longitude).toFixed(5)}
                     </small>
+                  )}
+                  {/* "Ver en el mapa" — only meaningful for existing
+                      geolocated events. Closes the modal and navigates
+                      to /map?event=<id> so Mapview flies to the marker. */}
+                  {isEditMode && form.latitude != null && form.longitude != null && (
+                    <Button
+                      variant="outline-info"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => {
+                        onHide();
+                        navigate(`/map?event=${eventId}`);
+                      }}
+                    >
+                      <FiMapPin className="me-1" /> Ver en el mapa
+                    </Button>
                   )}
                 </Col>
 

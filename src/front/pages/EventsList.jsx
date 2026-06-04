@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Container,
   Row,
@@ -210,7 +211,16 @@ const ResponseBar = ({ eventId, myStatus, initialRsvp, onChanged }) => {
 // =============================================================
 // MAIN
 // =============================================================
+// Navigate to /map?event=<id> — the Mapview component reads this param
+// and flies to the event's coords (force-showing the marker even when
+// the user has a pending invitation for it).
+const goToEventOnMap = (navigate, eventId) => (e) => {
+  e.stopPropagation();   // do NOT trigger the card click that opens the modal
+  navigate(`/map?event=${eventId}`);
+};
+
 export const EventsList = () => {
+  const navigate = useNavigate();
   const [events, setEvents]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -389,7 +399,31 @@ export const EventsList = () => {
                       <strong className="text-light text-truncate">
                         {e.title || "(untitled event)"}
                       </strong>
-                      {statusPill(e)}
+                      <div className="d-flex align-items-center gap-1">
+                        {/* 📍 Deep-link to the map at this event's location.
+                            Disabled if the event has no coords (can't
+                            possibly show on the map). */}
+                        {e.latitude != null && e.longitude != null && (
+                          <button
+                            type="button"
+                            className="btn btn-sm sq-go-to-map"
+                            onClick={goToEventOnMap(navigate, e.id)}
+                            title="Ver en el mapa"
+                            style={{
+                              padding: "2px 6px",
+                              background: "rgba(99,102,241,0.15)",
+                              border: "1px solid #6366f1",
+                              borderRadius: 6,
+                              color: "#a5b4fc",
+                              display: "inline-flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            <FiMapPin size={14} />
+                          </button>
+                        )}
+                        {statusPill(e)}
+                      </div>
                     </div>
 
                     <div className="event-meta mb-1">

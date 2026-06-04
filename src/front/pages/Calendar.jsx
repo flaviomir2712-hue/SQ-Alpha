@@ -1,26 +1,52 @@
 import { useEffect, useMemo, useState } from "react";
-import { Spinner, Alert } from "react-bootstrap";
+import { useNavigate } from "react-router-dom";
 import {
-  FiChevronLeft, FiChevronRight, FiCalendar, FiClock, FiMapPin,
-  FiPlus, FiCheckCircle, FiHelpCircle, FiXCircle,
+  Container,
+  Row,
+  Col,
+  Card,
+  Tabs,
+  Tab,
+  Badge,
+  Button,
+  Spinner,
+  Alert,
+  Form,
+  InputGroup,
+} from "react-bootstrap";
+import {
+  FiCalendar,
+  FiClock,
+  FiMapPin,
+  FiUsers,
+  FiSearch,
+  FiPlus,
+  FiImage,
+  FiCheckCircle,
+  FiHelpCircle,
+  FiXCircle,
 } from "react-icons/fi";
+
 import { EventModal } from "../components/EventModal";
 
-// ─── API ─────────────────────────────────────────────────────────────────────
+// =============================================================
+// INLINE API + STYLES
+// =============================================================
 const API = import.meta.env.VITE_BACKEND_URL;
 const authHeaders = () => ({
   "Content-Type": "application/json",
   Authorization: `Bearer ${localStorage.getItem("token")}`,
 });
 const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
+  const data = await res.json();
   if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
   return data;
 };
 const apiListEvents = () =>
   fetch(`${API}/api/events`, { headers: authHeaders() }).then(handle);
 
-// Unified response (going/maybe/not_going). Joins invitees automatically.
+// Unified response (going/maybe/not_going). Works for invitees (joins them
+// or declines the invitation) AND participants (just updates rsvp).
 const apiRespond = (eventId, response) =>
   fetch(`${API}/api/events/${eventId}/respond`, {
     method: "PUT",
@@ -28,51 +54,181 @@ const apiRespond = (eventId, response) =>
     body: JSON.stringify({ response }),
   }).then(handle);
 
-// ─── COLOUR PALETTE ──────────────────────────────────────────────────────────
-const PALETTE = ["#a855f7", "#f97316", "#22d3ee", "#34d399", "#f43f5e", "#facc15", "#60a5fa"];
-const eventColor = (idx) => PALETTE[idx % PALETTE.length];
-
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-const DAYS   = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["January","February","March","April","May","June",
-                "July","August","September","October","November","December"];
-
-function buildCells(year, month) {
-  const firstDay    = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const daysInPrev  = new Date(year, month, 0).getDate();
-  const cells = [];
-
-  for (let i = firstDay - 1; i >= 0; i--)
-    cells.push({ day: daysInPrev - i, current: false, date: null });
-
-  for (let d = 1; d <= daysInMonth; d++) {
-    const mm = String(month + 1).padStart(2, "0");
-    const dd = String(d).padStart(2, "0");
-    cells.push({ day: d, current: true, date: `${year}-${mm}-${dd}` });
-  }
-
-  const remaining = 42 - cells.length;
-  for (let d = 1; d <= remaining; d++)
-    cells.push({ day: d, current: false, date: null });
-
-  return cells;
+const CSS = `
+.events-list-page {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(99, 102, 241, 0.15), transparent 60%),
+    radial-gradient(900px 500px at 100% 10%, rgba(236, 72, 153, 0.10), transparent 60%),
+    #0b0d12;
+  color: #e9ecef;
+  padding-top: 80px;
+  padding-bottom: 100px;
+}
+.event-card {
+  background: #161922;
+  border: 1px solid #262a36;
+  border-radius: 14px;
+  color: #e9ecef;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  cursor: pointer;
+  overflow: hidden;
+  bottom: 0px;
+}
+.event-card:hover {
+  border-color: #3a3f55;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transform: translateY(-2px);
+}
+.event-card-img {
+  width: 100%; height: 140px; object-fit: cover;
+  border-bottom: 1px solid #262a36;
+}
+.event-card-noimg {
+  width: 100%; height: 140px;
+  background: linear-gradient(135deg, #1e2230, #0f111a);
+  display: flex; align-items: center; justify-content: center;
+  color: #2a2f42; border-bottom: 1px solid #262a36;
+}
+.events-list-page .form-control,
+.events-list-page .form-control:focus {
+  background-color: #0f111a !important;
+  color: #e9ecef !important;
+  border-color: #2a2f42 !important;
+  box-shadow: none;
+}
+.events-list-page .nav-tabs { border-bottom: 1px solid #262a36; }
+.events-list-page .nav-tabs .nav-link {
+  color: #adb5bd; background: transparent; border: none;
+  border-bottom: 2px solid transparent;
+}
+.events-list-page .nav-tabs .nav-link.active {
+  color: #fff; background: transparent;
+  border-bottom: 2px solid #6366f1;
+}
+.event-meta {
+  display: flex; align-items: center; gap: 0.35rem;
+  color: #adb5bd; font-size: 0.85rem;
 }
 
-// ─── COMPONENT ────────────────────────────────────────────────────────────────
-export const Calendar = () => {
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+/* ── RSVP bar ── */
+.rsvp-bar {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #262a36;
+}
+.rsvp-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 2px;
+  border-radius: 8px;
+  border: 1px solid #262a36;
+  background: #0f111a;
+  color: #6c757d;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.rsvp-btn:hover { background: #1e2230; color: #e9ecef; }
+.rsvp-btn.active-going     { background: rgba(34,211,238,0.15); border-color: #22d3ee; color: #22d3ee; }
+.rsvp-btn.active-maybe     { background: rgba(250,204,21,0.15);  border-color: #facc15; color: #facc15; }
+.rsvp-btn.active-not_going { background: rgba(244,63,94,0.15);   border-color: #f43f5e; color: #f43f5e; }
+.rsvp-btn:disabled { opacity: 0.45; pointer-events: none; }
 
-  const [viewYear, setViewYear]         = useState(today.getFullYear());
-  const [viewMonth, setViewMonth]       = useState(today.getMonth());
-  const [events, setEvents]             = useState([]);
-  const [loading, setLoading]           = useState(true);
-  const [error, setError]               = useState(null);
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [modalOpen, setModalOpen]       = useState(false);
+/* Status pill in card top-right */
+.status-pill {
+  font-size: 0.65rem !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.status-pill.pending  { background: #facc15 !important; color: #0b0d12 !important; }
+.status-pill.accepted { background: #4f46e5 !important; }
+.status-pill.creator  { background: #22d3ee !important; color: #0b0d12 !important; }
+`;
+
+// =============================================================
+// RESPONSE OPTIONS
+// =============================================================
+const RESPONSE_OPTIONS = [
+  { value: "going",     label: "Voy",     icon: <FiCheckCircle size={12} /> },
+  { value: "maybe",     label: "Tal vez", icon: <FiHelpCircle  size={12} /> },
+  { value: "not_going", label: "No voy",  icon: <FiXCircle     size={12} /> },
+];
+
+// =============================================================
+// RESPONSE BAR — self-contained, stops click propagation so it
+// doesn't open the modal when the user clicks a button
+// =============================================================
+const ResponseBar = ({ eventId, myStatus, initialRsvp, onChanged }) => {
+  const [rsvp, setRsvp]     = useState(initialRsvp || null);
+  const [saving, setSaving] = useState(false);
+
+  const handleClick = async (e, value) => {
+    e.stopPropagation();
+    if (saving) return;
+    setSaving(true);
+    try {
+      const data = await apiRespond(eventId, value);
+      // /respond returns the updated event — pull my_rsvp from it.
+      const next = data?.event?.my_rsvp ?? value;
+      setRsvp(next);
+      if (onChanged) onChanged(eventId, data?.event || null);
+    } catch {
+      // silently ignore — the button just stays where it was
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rsvp-bar" onClick={(e) => e.stopPropagation()}>
+      {RESPONSE_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          className={`rsvp-btn${rsvp === opt.value ? ` active-${opt.value}` : ""}`}
+          disabled={saving}
+          onClick={(e) => handleClick(e, opt.value)}
+          title={
+            myStatus === "pending"
+              ? (opt.value === "not_going" ? "Rechazar invitación" : `Aceptar (${opt.label})`)
+              : opt.label
+          }
+        >
+          {opt.icon} {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+// =============================================================
+// MAIN
+// =============================================================
+// Navigate to /map?event=<id> — the Mapview component reads this param
+// and flies to the event's coords (force-showing the marker even when
+// the user has a pending invitation for it).
+const goToEventOnMap = (navigate, eventId) => (e) => {
+  e.stopPropagation();   // do NOT trigger the card click that opens the modal
+  navigate(`/map?event=${eventId}`);
+};
+
+export const EventsList = () => {
+  const navigate = useNavigate();
+  const [events, setEvents]   = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState(null);
+  const [tab, setTab]         = useState("all");
+  const [searchQ, setSearchQ] = useState("");
+
+  const [modalOpen, setModalOpen]         = useState(false);
   const [activeEventId, setActiveEventId] = useState(null);
-  const [busyEventId, setBusyEventId]   = useState(null);
 
   const currentUser = JSON.parse(localStorage.getItem("user") || "null");
   const myId = currentUser?.id;
@@ -89,220 +245,219 @@ export const Calendar = () => {
       setLoading(false);
     }
   };
+
   useEffect(() => { reload(); }, []);
-
-  const cells = useMemo(() => buildCells(viewYear, viewMonth), [viewYear, viewMonth]);
-
-  const { byDate, colorMap } = useMemo(() => {
-    const byDate = {};
-    const colorMap = {};
-    let idx = 0;
-    for (const ev of events) {
-      if (!ev.date) continue;
-      if (!byDate[ev.date]) byDate[ev.date] = [];
-      byDate[ev.date].push(ev);
-      if (colorMap[ev.id] === undefined) colorMap[ev.id] = idx++;
-    }
-    return { byDate, colorMap };
-  }, [events]);
-
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewYear(y => y - 1); setViewMonth(11); }
-    else setViewMonth(m => m - 1);
-  };
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewYear(y => y + 1); setViewMonth(0); }
-    else setViewMonth(m => m + 1);
-  };
 
   const openEvent  = (id) => { setActiveEventId(id); setModalOpen(true); };
   const openCreate = ()    => { setActiveEventId(null); setModalOpen(true); };
   const closeModal = ()    => { setModalOpen(false); setActiveEventId(null); };
 
-  const handleRespond = async (eventId, value, evt) => {
-    evt?.stopPropagation();
-    if (busyEventId) return;
-    setBusyEventId(eventId);
-    try {
-      const data = await apiRespond(eventId, value);
-      const updated = data?.event;
-      setEvents((prev) => {
-        // Declined invitation → remove from list (no longer visible)
-        if (updated && updated.my_status === "none") {
-          return prev.filter((e) => e.id !== eventId);
-        }
-        return prev.map((e) => e.id === eventId ? { ...e, ...(updated || {}) } : e);
-      });
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusyEventId(null);
-    }
+  // Patch a single event in state with the updated payload returned by
+  // /respond. Falls back to a full reload when the backend payload is
+  // missing the my_status hint (e.g. after declining an invitation).
+  const handleRespondChanged = (eventId, updatedEvent) => {
+    if (!updatedEvent) { reload(); return; }
+    setEvents((prev) => {
+      // Was this a "decline invitation" (no longer in participants and not pending)?
+      const stillThere = updatedEvent.my_status !== "none";
+      if (!stillThere) return prev.filter((e) => e.id !== eventId);
+      return prev.map((ev) => ev.id === eventId ? { ...ev, ...updatedEvent } : ev);
+    });
   };
 
-  const selectedEvents = selectedDate ? (byDate[selectedDate] || []) : [];
+  const isPast = (e) => {
+    if (!e?.date) return false;
+    const d = new Date(e.date);
+    if (Number.isNaN(d.getTime())) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    d.setHours(0, 0, 0, 0);
+    return d < today;
+  };
 
-  // Show response bar for invitees and accepted non-creators.
+  const filtered = useMemo(() => {
+    let list = events;
+    if (tab === "created")  list = list.filter((e) => e.creator_id === myId);
+    if (tab === "pending")  list = list.filter((e) => e.my_status === "pending");
+    if (tab === "past")     list = list.filter((e) => isPast(e));
+
+    const q = searchQ.trim().toLowerCase();
+    if (q) {
+      list = list.filter((e) =>
+        (e.title || "").toLowerCase().includes(q) ||
+        (e.location || "").toLowerCase().includes(q) ||
+        (e.details || "").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [events, tab, searchQ, myId]);
+
+  const counts = useMemo(() => ({
+    all:     events.length,
+    created: events.filter((e) => e.creator_id === myId).length,
+    pending: events.filter((e) => e.my_status === "pending").length,
+    past:    events.filter((e) => isPast(e)).length,
+  }), [events, myId]);
+
+  // Show the response bar for: invitees (my_status==="pending") AND
+  // accepted participants who aren't the creator.
   const showResponseBar = (e) =>
     e.creator_id !== myId &&
     (e.my_status === "pending" || e.my_status === "accepted");
 
+  const statusPill = (e) => {
+    if (e.creator_id === myId) return <Badge className="status-pill creator">Creator</Badge>;
+    if (e.my_status === "pending")  return <Badge className="status-pill pending">Invitado</Badge>;
+    if (e.my_status === "accepted") return <Badge className="status-pill accepted">Voy</Badge>;
+    return <Badge bg="secondary">—</Badge>;
+  };
+
   return (
-    <div style={S.page}>
+    <div className="events-list-page">
       <style>{CSS}</style>
 
-      {/* HEADER */}
-      <div style={S.header}>
-        <div style={S.headerRow}>
-          <FiCalendar size={22} color="#6366f1" />
-          <h1 style={S.title}>Calendar</h1>
-        </div>
-        <p style={S.subtitle}>All your events at a glance</p>
-      </div>
-
-      {error && (
-        <div style={{ padding: "0 1rem" }}>
-          <Alert variant="danger" onClose={() => setError(null)} dismissible>{error}</Alert>
-        </div>
-      )}
-
-      {loading ? (
-        <div style={S.center}><Spinner animation="border" variant="light" /></div>
-      ) : (
-        <div style={S.wrap}>
-
-          <div style={S.monthNav}>
-            <button style={S.navBtn} onClick={prevMonth}><FiChevronLeft size={20} /></button>
-            <span style={S.monthLabel}>{MONTHS[viewMonth]} {viewYear}</span>
-            <button style={S.navBtn} onClick={nextMonth}><FiChevronRight size={20} /></button>
+      <Container className="py-4">
+        <div className="d-flex align-items-center justify-content-between flex-wrap gap-3 mb-4">
+          <div>
+            <h1 className="text-light mb-1 d-flex align-items-center gap-2">
+              <FiCalendar /> My Events
+            </h1>
+            <p className="text-secondary mb-0">
+              Manage your quests, invite friends, chat with participants.
+            </p>
           </div>
+          <Button variant="primary" onClick={openCreate}>
+            <FiPlus className="me-1" /> New event
+          </Button>
+        </div>
 
-          <div style={S.dayNames}>
-            {DAYS.map(d => <div key={d} style={S.dayName}>{d}</div>)}
+        {error && (
+          <Alert variant="danger" onClose={() => setError(null)} dismissible>
+            {error}
+          </Alert>
+        )}
+
+        <Card className="event-card mb-4" style={{ cursor: "default" }}>
+          <Card.Body>
+            <InputGroup>
+              <InputGroup.Text className="bg-dark border-secondary text-light">
+                <FiSearch />
+              </InputGroup.Text>
+              <Form.Control
+                placeholder="Search by title, location or details..."
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+              />
+              {searchQ && (
+                <Button variant="outline-secondary" onClick={() => setSearchQ("")}>
+                  Clear
+                </Button>
+              )}
+            </InputGroup>
+          </Card.Body>
+        </Card>
+
+        <Tabs activeKey={tab} onSelect={(k) => setTab(k)} className="mb-3" fill>
+          <Tab eventKey="all"     title={<span>All     <Badge bg="secondary">{counts.all}</Badge></span>} />
+          <Tab eventKey="created" title={<span>Created <Badge bg="secondary">{counts.created}</Badge></span>} />
+          <Tab eventKey="pending" title={<span>Invitado <Badge bg="warning" text="dark">{counts.pending}</Badge></span>} />
+          <Tab eventKey="past"    title={<span>Past    <Badge bg="secondary">{counts.past}</Badge></span>} />
+        </Tabs>
+
+        {loading ? (
+          <div className="text-center py-5 text-secondary">
+            <Spinner animation="border" />
           </div>
-
-          <div style={S.grid}>
-            {cells.map((cell, i) => {
-              const evs        = cell.date ? (byDate[cell.date] || []) : [];
-              const isToday    = cell.date === todayStr;
-              const isSelected = cell.date === selectedDate;
-
-              return (
-                <div
-                  key={i}
-                  className={[
-                    "cal-cell",
-                    !cell.current  ? "cal-faded"   : "",
-                    isToday        ? "cal-today"   : "",
-                    isSelected     ? "cal-selected": "",
-                  ].join(" ")}
-                  onClick={() => {
-                    if (!cell.current || !cell.date) return;
-                    setSelectedDate(cell.date === selectedDate ? null : cell.date);
-                  }}
+        ) : filtered.length === 0 ? (
+          <div className="text-center py-5 text-secondary">
+            <FiCalendar size={42} className="mb-2" />
+            <h5 className="text-light">No events {searchQ && "match your search"}</h5>
+            <div className="small">
+              {tab === "created"
+                ? "Click 'New event' to create your first one."
+                : "Create one or wait for a friend to invite you."}
+            </div>
+          </div>
+        ) : (
+          <Row className="g-3">
+            {filtered.map((e) => (
+              <Col md={6} lg={4} key={e.id}>
+                <Card
+                  className="event-card h-100"
+                  onClick={() => openEvent(e.id)}
                 >
-                  <span className={`cal-num${isToday ? " cal-num-today" : ""}`}>
-                    {cell.day}
-                  </span>
-
-                  {evs.slice(0, 2).map(ev => (
-                    <div
-                      key={ev.id}
-                      className={`cal-pill ${ev.my_status === "pending" ? "cal-pill-pending" : ""}`}
-                      style={{ borderLeftColor: eventColor(colorMap[ev.id]) }}
-                      onClick={(e) => { e.stopPropagation(); openEvent(ev.id); }}
-                    >
-                      <span className="cal-pill-title">{ev.title || "(untitled)"}</span>
-                      <span className="cal-pill-time">{ev.time}</span>
+                  {e.image ? (
+                    <img src={e.image} alt={e.title || "event"} className="event-card-img" />
+                  ) : (
+                    <div className="event-card-noimg">
+                      <FiImage size={42} />
                     </div>
-                  ))}
-
-                  {evs.length > 2 && (
-                    <span className="cal-more">+{evs.length - 2} more</span>
                   )}
-                </div>
-              );
-            })}
-          </div>
 
-          {selectedDate && (
-            <div style={S.panel}>
-              <div style={S.panelHead}>
-                <span style={S.panelTitle}>
-                  {new Date(selectedDate + "T00:00:00").toLocaleDateString(undefined, {
-                    weekday: "long", month: "long", day: "numeric",
-                  })}
-                </span>
-                <button style={S.addBtn} onClick={openCreate}>
-                  <FiPlus size={14} /> New event
-                </button>
-              </div>
-
-              {selectedEvents.length === 0 ? (
-                <p style={S.empty}>No events this day.</p>
-              ) : (
-                selectedEvents.map(ev => (
-                  <div
-                    key={ev.id}
-                    className="cal-event-row"
-                    style={{ ...S.eventRow, borderLeftColor: eventColor(colorMap[ev.id]) }}
-                    onClick={() => openEvent(ev.id)}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={S.eventTitle}>
-                        {ev.title || "(untitled)"}
-                        {ev.my_status === "pending" && (
-                          <span style={S.pendingTag}>Invitado</span>
+                  <Card.Body>
+                    <div className="d-flex justify-content-between align-items-start gap-2 mb-2">
+                      <strong className="text-light text-truncate">
+                        {e.title || "(untitled event)"}
+                      </strong>
+                      <div className="d-flex align-items-center gap-1">
+                        {/* 📍 Deep-link to the map at this event's location.
+                            Disabled if the event has no coords (can't
+                            possibly show on the map). */}
+                        {e.latitude != null && e.longitude != null && (
+                          <button
+                            type="button"
+                            className="btn btn-sm sq-go-to-map"
+                            onClick={goToEventOnMap(navigate, e.id)}
+                            title="Ver en el mapa"
+                            style={{
+                              padding: "2px 6px",
+                              background: "rgba(99,102,241,0.15)",
+                              border: "1px solid #6366f1",
+                              borderRadius: 6,
+                              color: "#a5b4fc",
+                              display: "inline-flex",
+                              alignItems: "center",
+                            }}
+                          >
+                            <FiMapPin size={14} />
+                          </button>
                         )}
-                        {ev.creator_id === myId && (
-                          <span style={S.creatorTag}>Creator</span>
-                        )}
+                        {statusPill(e)}
                       </div>
-                      <div style={S.eventMeta}>
-                        <FiClock size={11} />
-                        <span>{ev.time}</span>
-                        {ev.location && (
-                          <>
-                            <FiMapPin size={11} />
-                            <span style={S.loc}>{ev.location}</span>
-                          </>
-                        )}
-                      </div>
+                    </div>
 
-                      {showResponseBar(ev) && (
-                        <div className="cal-rsvp" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            className={`cal-rsvp-btn going ${ev.my_rsvp === "going" ? "active" : ""}`}
-                            disabled={busyEventId === ev.id}
-                            onClick={(e) => handleRespond(ev.id, "going", e)}
-                          >
-                            <FiCheckCircle size={11} /> Voy
-                          </button>
-                          <button
-                            className={`cal-rsvp-btn maybe ${ev.my_rsvp === "maybe" ? "active" : ""}`}
-                            disabled={busyEventId === ev.id}
-                            onClick={(e) => handleRespond(ev.id, "maybe", e)}
-                          >
-                            <FiHelpCircle size={11} /> Tal vez
-                          </button>
-                          <button
-                            className={`cal-rsvp-btn not_going ${ev.my_rsvp === "not_going" ? "active" : ""}`}
-                            disabled={busyEventId === ev.id}
-                            onClick={(e) => handleRespond(ev.id, "not_going", e)}
-                          >
-                            <FiXCircle size={11} /> No voy
-                          </button>
-                        </div>
+                    <div className="event-meta mb-1">
+                      <FiCalendar /> {e.date} <FiClock className="ms-2" /> {e.time}
+                    </div>
+                    {e.location && (
+                      <div className="event-meta mb-1 text-truncate" title={e.location}>
+                        <FiMapPin /> {e.location}
+                      </div>
+                    )}
+                    <div className="event-meta">
+                      <FiUsers /> {e.participants_count} participant{e.participants_count !== 1 ? "s" : ""}
+                      {e.going_count > 0 && (
+                        <span className="ms-2 small text-info">
+                          ({e.going_count} voy)
+                        </span>
                       )}
                     </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
 
-        </div>
-      )}
+                    {showResponseBar(e) && (
+                      <ResponseBar
+                        eventId={e.id}
+                        myStatus={e.my_status}
+                        initialRsvp={e.my_rsvp}
+                        onChanged={handleRespondChanged}
+                      />
+                    )}
+                  </Card.Body>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        )}
+      </Container>
 
       <EventModal
         show={modalOpen}
@@ -317,141 +472,4 @@ export const Calendar = () => {
   );
 };
 
-export default Calendar;
-
-// ─── INLINE STYLES ────────────────────────────────────────────────────────────
-const S = {
-  page: {
-    minHeight: "100vh",
-    background: `
-      radial-gradient(1200px 600px at 10% -10%, rgba(99,102,241,0.15), transparent 60%),
-      radial-gradient(900px 500px at 100% 10%, rgba(236,72,153,0.10), transparent 60%),
-      #0b0d12`,
-    color: "#e9ecef",
-    paddingTop: 80,
-    paddingBottom: 100,
-  },
-  header:     { padding: "0 1.25rem 1rem" },
-  headerRow:  { display: "flex", alignItems: "center", gap: 10, marginBottom: 4 },
-  title:      { margin: 0, fontSize: "1.6rem", fontWeight: 700, color: "#fff" },
-  subtitle:   { margin: 0, color: "#6c757d", fontSize: "0.9rem" },
-  center:     { display: "flex", justifyContent: "center", paddingTop: 80 },
-  wrap:       { padding: "0 1rem" },
-  monthNav:   { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" },
-  navBtn:     { background: "#161922", border: "1px solid #262a36", color: "#e9ecef", borderRadius: 8, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center" },
-  monthLabel: { fontWeight: 700, fontSize: "1.1rem", color: "#fff" },
-  dayNames:   { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 4 },
-  dayName:    { textAlign: "center", fontSize: "0.72rem", fontWeight: 600, color: "#6c757d", textTransform: "uppercase", letterSpacing: "0.05em", padding: "4px 0" },
-  grid:       { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 },
-  panel:      { marginTop: "1rem", background: "#161922", border: "1px solid #262a36", borderRadius: 14, padding: "1rem" },
-  panelHead:  { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" },
-  panelTitle: { fontWeight: 700, color: "#fff", fontSize: "0.95rem" },
-  addBtn:     { background: "linear-gradient(135deg,#6366f1,#4f46e5)", border: "none", color: "#fff", borderRadius: 8, padding: "5px 12px", fontSize: "0.8rem", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 },
-  empty:      { color: "#6c757d", fontSize: "0.9rem", margin: 0 },
-  eventRow:   { display: "flex", alignItems: "flex-start", gap: 10, padding: "0.6rem 0.75rem", borderRadius: 10, cursor: "pointer", marginBottom: 4, borderLeft: "3px solid transparent", background: "#0f111a" },
-  eventTitle: { fontWeight: 600, color: "#e9ecef", fontSize: "0.9rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", gap: 6 },
-  eventMeta:  { display: "flex", alignItems: "center", gap: 4, color: "#6c757d", fontSize: "0.78rem", marginTop: 2 },
-  loc:        { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 120 },
-  pendingTag: {
-    fontSize: "0.6rem", padding: "1px 6px", borderRadius: 999,
-    background: "#facc15", color: "#0b0d12", fontWeight: 700,
-    textTransform: "uppercase", letterSpacing: "0.04em",
-  },
-  creatorTag: {
-    fontSize: "0.6rem", padding: "1px 6px", borderRadius: 999,
-    background: "#22d3ee", color: "#0b0d12", fontWeight: 700,
-    textTransform: "uppercase", letterSpacing: "0.04em",
-  },
-};
-
-const CSS = `
-.cal-cell {
-  min-height: 80px;
-  display: flex;
-  flex-direction: column;
-  padding: 4px 3px;
-  border-radius: 8px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: background 0.15s;
-  overflow: hidden;
-}
-.cal-cell:hover { background: #161922; }
-.cal-faded { cursor: default; opacity: 0.3; }
-.cal-faded:hover { background: transparent; }
-.cal-today  { background: #1a1d2e; border-color: #6366f1 !important; }
-.cal-selected { background: #1e2230 !important; border-color: #a855f7 !important; }
-.cal-num {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #9ca3af;
-  text-align: right;
-  padding-right: 3px;
-  margin-bottom: 3px;
-  line-height: 1;
-}
-.cal-num-today {
-  color: #6366f1 !important;
-  font-weight: 800;
-}
-.cal-pill {
-  display: flex;
-  flex-direction: column;
-  background: rgba(255,255,255,0.06);
-  border-left: 3px solid #a855f7;
-  border-radius: 4px;
-  padding: 2px 4px;
-  margin-bottom: 2px;
-  cursor: pointer;
-  overflow: hidden;
-  transition: background 0.12s;
-}
-.cal-pill:hover { background: rgba(255,255,255,0.12); }
-.cal-pill-pending {
-  border-left-color: #facc15 !important;
-  background: rgba(250,204,21,0.08) !important;
-}
-.cal-pill-title {
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: #e9ecef;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.3;
-}
-.cal-pill-time {
-  font-size: 0.62rem;
-  color: #9ca3af;
-  line-height: 1.2;
-}
-.cal-more {
-  font-size: 0.62rem;
-  color: #6c757d;
-  padding-left: 3px;
-  margin-top: 1px;
-}
-.cal-event-row { transition: background 0.12s; }
-.cal-event-row:hover { background: #1e2230 !important; }
-
-/* Response bar for the day-panel events */
-.cal-rsvp { display: flex; gap: 4px; margin-top: 8px; }
-.cal-rsvp-btn {
-  flex: 1;
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  border: 1px solid #262a36;
-  background: #0f111a;
-  color: #6c757d;
-  font-size: 0.7rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.cal-rsvp-btn:hover { background: #1e2230; color: #e9ecef; }
-.cal-rsvp-btn.active.going     { background: rgba(34,211,238,0.15); border-color: #22d3ee; color: #22d3ee; }
-.cal-rsvp-btn.active.maybe     { background: rgba(250,204,21,0.15); border-color: #facc15; color: #facc15; }
-.cal-rsvp-btn.active.not_going { background: rgba(244,63,94,0.15);  border-color: #f43f5e; color: #f43f5e; }
-.cal-rsvp-btn:disabled { opacity: 0.45; pointer-events: none; }
-`;
+export default EventsList;
