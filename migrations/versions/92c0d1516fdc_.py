@@ -1,8 +1,8 @@
 """empty message
 
-Revision ID: 859dd5305d4b
+Revision ID: 92c0d1516fdc
 Revises: 
-Create Date: 2026-06-03 19:20:10.141913
+Create Date: 2026-06-04 18:17:48.754339
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '859dd5305d4b'
+revision = '92c0d1516fdc'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -46,6 +46,7 @@ def upgrade():
     sa.Column('longitude', sa.Float(), nullable=True),
     sa.Column('details', sa.Text(), nullable=True),
     sa.Column('image', sa.Text(), nullable=True),
+    sa.Column('is_public', sa.Boolean(), server_default='false', nullable=False),
     sa.Column('creator_id', sa.Integer(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.ForeignKeyConstraint(['creator_id'], ['user.id'], ),
@@ -76,7 +77,7 @@ def upgrade():
     sa.Column('payload', sa.JSON(), nullable=False),
     sa.Column('is_read', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.CheckConstraint("type IN ('friend_request', 'event_invite', 'invite_suggestion')", name='ck_notification_type'),
+    sa.CheckConstraint("type IN ('friend_request', 'event_invite', 'invite_suggestion', 'event_public')", name='ck_notification_type'),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

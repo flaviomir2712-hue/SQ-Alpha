@@ -78,6 +78,9 @@ class Event(db.Model):
     longitude:  Mapped[float] = mapped_column(Float,       nullable=True)
     details:    Mapped[str]   = mapped_column(Text,        nullable=True)
     image:      Mapped[str]   = mapped_column(Text, nullable=True)
+    # Public events auto-invite all the creator's friends; private events are
+    # only visible to people who were explicitly invited.
+    is_public:  Mapped[bool]  = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     creator_id: Mapped[int]   = mapped_column(ForeignKey("user.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
 
@@ -144,6 +147,7 @@ class Event(db.Model):
             "longitude":          self.longitude,
             "details":            self.details,
             "image":              self.image,
+            "is_public":          bool(self.is_public),
             "creator_id":         self.creator_id,
             "creator_email":      self.creator.email if self.creator else None,
             "creator_username":   self.creator.username if self.creator else None,
@@ -505,6 +509,9 @@ class ChatMessage(db.Model):
 #   - "invite_suggestion"  payload: {event_id, suggestion_id, suggested_user_id,
 #                                    suggested_user_email, from_user_id, from_email,
 #                                    event_title}
+#   - "event_public"       payload: {event_id, invitation_id, from_user_id,
+#                                    from_email, event_title, event_date, event_time}
+#                          (sent to every friend when a public event is created)
 class Notification(db.Model):
     __tablename__ = "notification"
 
@@ -519,7 +526,7 @@ class Notification(db.Model):
 
     __table_args__ = (
         CheckConstraint(
-            "type IN ('friend_request', 'event_invite', 'invite_suggestion')",
+            "type IN ('friend_request', 'event_invite', 'invite_suggestion', 'event_public')",
             name="ck_notification_type",
         ),
         Index("ix_notification_user_read", "user_id", "is_read"),

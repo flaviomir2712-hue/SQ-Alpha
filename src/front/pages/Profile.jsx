@@ -167,8 +167,8 @@ const fullName = (user) => {
 };
 
 const levelColor = (level) => {
-  if (level === "Très actif") return "success";
-  if (level === "Actif") return "info";
+  if (level === "Very active") return "success";
+  if (level === "Active") return "info";
   return "secondary";
 };
 

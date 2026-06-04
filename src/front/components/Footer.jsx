@@ -111,6 +111,7 @@ const PROFILE_CSS = `
   border: 3px solid #6366f1;
   object-fit: cover;
   background: #0f111a;
+  display: flex;
 }
 .profile-avatar-fallback {
   display: flex;
@@ -327,9 +328,9 @@ export const Footer = () => {
 					<span>home</span>
 				</Link>
 
-				<Link to="/calendar" className="bottom-item text-decoration-none text-reset">
-					<FiCalendar />
-					<span>calendar</span>
+				<Link to="/messages" className="bottom-item text-decoration-none text-reset">
+					<FiMessageSquare />
+					<span>chatroom</span>
 				</Link>
 
 				<button
@@ -341,7 +342,7 @@ export const Footer = () => {
 				</button>
 
 				<Link to="/events" className="bottom-item text-decoration-none text-reset">
-					<FiMessageSquare />
+					<FiCalendar />
 					<span>events</span>
 				</Link>
 
@@ -532,7 +533,7 @@ export const Footer = () => {
 											onClick={handlePickPhoto}
 										>
 											<FiImage className="me-1" />
-											{profile.profile_picture_url ? "Cambiar foto" : "Subir foto"}
+											{profile.profile_picture_url ? "Change photo" : "Upload photo"}
 										</Button>
 										{profile.profile_picture_url && (
 											<Button
@@ -540,12 +541,12 @@ export const Footer = () => {
 												size="sm"
 												onClick={removePhoto}
 											>
-												<FiX className="me-1" /> Quitar
+												<FiX className="me-1" /> Remove
 											</Button>
 										)}
 									</div>
 									<small className="text-secondary">
-										Desde tu dispositivo · max 1.5 MB
+										From your device · max 1.5 MB
 									</small>
 
 									<input

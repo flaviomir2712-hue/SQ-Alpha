@@ -38,13 +38,13 @@ import {
 
 // Options for the map time filter (number of days). null = no filter.
 const MAP_FILTER_OPTIONS = [
-    { value: null, label: "All" },
-    { value: 1,    label: "Today and tomorrow" },
-    { value: 3,    label: "Nexts 3 days" },
-    { value: 7,    label: "Next Week" },
-    { value: 14,   label: "Nexts 2 weeks" },
-    { value: 30,   label: "Next mounth" },
-    { value: 90,   label: "nexts 3 mounth" },
+    { value: null, label: "Todos" },
+    { value: 1,    label: "Hoy y mañana" },
+    { value: 3,    label: "Próximos 3 días" },
+    { value: 7,    label: "Próxima semana" },
+    { value: 14,   label: "Próximas 2 semanas" },
+    { value: 30,   label: "Próximo mes" },
+    { value: 90,   label: "Próximos 3 meses" },
 ];
 
 const labelForFilter = (val) =>
@@ -398,28 +398,6 @@ const NAVBAR_CSS = `
 @media (max-width: 575.98px) {
   .sq-navbar .navbar-brand { font-size: 1.5rem; }
   .sq-hide-xs { display: none !important; }
-
-  /* Chat modal goes near full-screen on phones — maximises room for
-     the thread instead of wasting 24px of side gutter. */
-  .sq-chat-modal .modal-dialog {
-    margin: 4px;
-    width: calc(100vw - 8px);
-    max-width: calc(100vw - 8px);
-  }
-  .sq-chat-modal .modal-content { border-radius: 10px; }
-  .sq-chat-modal .modal-body { padding: 0.75rem; }
-  .sq-chat-modal .modal-header { padding: 0.65rem 0.85rem; }
-  .sq-chat-modal .modal-footer { padding: 0.55rem 0.85rem; }
-
-  /* Chat thread takes more of the available vertical room. */
-  .sq-chat-thread { height: 58vh; }
-
-  /* Tighter card spacing in the chat list */
-  .sq-chat-card { padding: 0.5rem 0.6rem; gap: 0.55rem; }
-  .sq-chat-avatar, .sq-chat-avatar-fallback { width: 48px; height: 48px; }
-
-  /* Section titles in search results — slightly smaller margin */
-  .sq-chat-section-title { margin: 0.5rem 0 0.35rem 0.1rem; }
 }
 `;
 
@@ -638,16 +616,7 @@ export const Navbar = () => {
         e.target.value = "";
         if (!file || !activeRoom) return;
         try {
-            // Compress big phone shots before sending — a 5 MB iPhone
-            // photo becomes ~250 KB after compressImage("chat").
-            let dataUrl;
-            try {
-                const { compressImage } = await import("../utils/uploadImage");
-                dataUrl = await compressImage(file, "chat");
-            } catch (compressErr) {
-                console.error("Compression failed, sending raw:", compressErr);
-                dataUrl = await fileToDataURL(file);
-            }
+            const dataUrl = await fileToDataURL(file);
             await sendRoomMessage(activeRoom.id, {
                 media_url: dataUrl,
                 media_type: "image",
@@ -775,7 +744,7 @@ export const Navbar = () => {
                     <div className="d-flex align-items-center gap-2">
                         <Link to="/" className="text-decoration-none">
                             <NavbarBs.Brand className="fw-bold fs-3 mb-0">
-                                <img src="src/front/assets/img/logoSideQuest.png" alt="SideQuest" style={{ filter: "brightness(0) invert(1)", height: "40px", width:"auto" }} />
+                                <img src="/logoSideQuest.png" alt="SideQuest" style={{ filter: "brightness(0) invert(1)", height: "32px", width:"auto" }} />
                             </NavbarBs.Brand>
                         </Link>
 
@@ -787,9 +756,9 @@ export const Navbar = () => {
                                     as={Button}
                                     variant="dark"
                                     className="sq-filter-toggle position-relative border-0 p-1"
-                                    title="Filtrar eventos en el mapa"
+                                    title="Filter events on the map"
                                 >
-                                    <FiFilter size={16} color="white" />
+                                    <FiFilter size={24} color="white" />
                                     {store.mapFilterDays !== null && store.mapFilterDays !== undefined && (
                                         <Badge
                                             bg="info"
@@ -802,7 +771,7 @@ export const Navbar = () => {
                                     )}
                                 </Dropdown.Toggle>
                                 <Dropdown.Menu className="sq-menu-dropdown">
-                                    <Dropdown.Header>Filtro de eventos</Dropdown.Header>
+                                    <Dropdown.Header>Event filter</Dropdown.Header>
                                     <Dropdown.Divider />
                                     {MAP_FILTER_OPTIONS.map((opt) => {
                                         const isActive = (store.mapFilterDays ?? null) === opt.value;
@@ -826,27 +795,15 @@ export const Navbar = () => {
                     <Nav className="d-flex flex-row align-items-center gap-2 gap-md-3">
                         {isLogged ? (
                             <>
-                                {/* NotificationBell is now always visible — on
-                                    mobile too. Was previously hidden behind
-                                    the `sq-hide-xs` wrapper. */}
-                                <NotificationBell />
-
-                                {/* FRIENDS — promoted out of the hamburger to a top-level icon */}
-                                <Link to="/friends" className="text-decoration-none">
-                                    <Button
-                                        variant="dark"
-                                        className="border-0 p-2"
-                                        title="Friends"
-                                    >
-                                        <FiUsers size={24} color="white" />
-                                    </Button>
-                                </Link>
+                                <span className="sq-hide-xs">
+                                    <NotificationBell />
+                                </span>
 
                                 <Button
                                     variant="dark"
                                     className="position-relative border-0 p-2"
                                     onClick={() => setShowMessages(true)}
-                                    title="Mis mensajes"
+                                    title="My messages"
                                 >
                                     <FiMail size={24} color="white" />
                                     {chatUnread > 0 && (
@@ -872,18 +829,14 @@ export const Navbar = () => {
 
                                     <Dropdown.Menu className="sq-menu-dropdown">
                                         <Dropdown.Header>
-                                            Hey{cachedUser?.username
+                                            Hi {cachedUser?.username
                                                 ? `@${cachedUser.username}`
                                                 : (cachedUser?.email || "—")}
                                         </Dropdown.Header>
                                         <Dropdown.Divider />
 
-                                        <Dropdown.Item as={Link} to="/events">
-                                            <FiCalendar className="me-2" /> My Events
-                                        </Dropdown.Item>
-
-                                        <Dropdown.Item as={Link} to="/messages">
-                                            <FiMail className="me-2" /> Chatroom
+                                        <Dropdown.Item as={Link} to="/friends">
+                                            <FiUsers className="me-2" /> Friends
                                         </Dropdown.Item>
 
                                         <Dropdown.Divider />
@@ -892,7 +845,7 @@ export const Navbar = () => {
                                             onClick={handleLogout}
                                             className="sq-menu-logout"
                                         >
-                                            <FiLogOut className="me-2" /> Logout
+                                            <FiLogOut className="me-2" /> Log out
                                         </Dropdown.Item>
                                     </Dropdown.Menu>
                                 </Dropdown>
@@ -901,12 +854,12 @@ export const Navbar = () => {
                             <>
                                 <Link to="/login">
                                     <Button variant="primary" size="sm" className="me-1">
-                                        Ingresar
+                                        Sign in
                                     </Button>
                                 </Link>
                                 <Link to="/register">
                                     <Button variant="success" size="sm">
-                                        Registro
+                                        Sign up
                                     </Button>
                                 </Link>
                             </>
@@ -930,7 +883,7 @@ export const Navbar = () => {
                                 size="sm"
                                 className="border-0 p-1"
                                 onClick={backToList}
-                                title="Volver a la lista"
+                                title="Back to list"
                             >
                                 <FiArrowLeft />
                             </Button>
@@ -938,14 +891,14 @@ export const Navbar = () => {
                         <span className="flex-grow-1">
                             {activeRoom
                                 ? getChatLabel(activeRoom, currentUserId)
-                                : "Tus Chats"}
+                                : "Your Chats"}
                         </span>
                         {activeRoom && (
                             <Button
                                 size="sm"
                                 className="sq-chat-fullscreen-btn"
                                 onClick={openInFullscreen}
-                                title="Abrir en pantalla completa"
+                                title="Open in fullscreen"
                             >
                                 <FiMaximize2 />
                             </Button>
@@ -962,7 +915,7 @@ export const Navbar = () => {
                                 </InputGroup.Text>
                                 <Form.Control
                                     className="sq-chat-search-input"
-                                    placeholder="Busca un chat de evento o un amigo..."
+                                    placeholder="Search for an event chat or a friend..."
                                     value={searchQ}
                                     onChange={(e) => setSearchQ(e.target.value)}
                                 />
@@ -971,11 +924,11 @@ export const Navbar = () => {
                             {showingSearch ? (
                                 <>
                                     <div className="sq-chat-section-title">
-                                        Chats de eventos
+                                        Event chats
                                     </div>
                                     {searchResults.event_rooms.length === 0 ? (
                                         <div className="sq-chat-empty-results">
-                                            Sin resultados
+                                            No results
                                         </div>
                                     ) : (
                                         searchResults.event_rooms.map((room) => (
@@ -989,11 +942,11 @@ export const Navbar = () => {
                                     )}
 
                                     <div className="sq-chat-section-title">
-                                        Amigos
+                                        Friends
                                     </div>
                                     {searchResults.friends.length === 0 ? (
                                         <div className="sq-chat-empty-results">
-                                            Sin resultados
+                                            No results
                                         </div>
                                     ) : (
                                         searchResults.friends.map((f) => (
@@ -1010,7 +963,7 @@ export const Navbar = () => {
                                 <>
                                     {(store.chatRooms || []).length === 0 ? (
                                         <p className="text-muted mb-0">
-                                            No tienes chats activos. Crea/unete a un evento o busca un amigo para empezar.
+                                            You have no active chats. Create/join an event or search for a friend to get started.
                                         </p>
                                     ) : (
                                         <ListGroup variant="flush">
@@ -1034,7 +987,7 @@ export const Navbar = () => {
                             <div className="sq-chat-thread" ref={threadRef}>
                                 {messages.length === 0 ? (
                                     <div className="text-secondary small text-center mt-4">
-                                        No hay mensajes todavia. Escribe el primero.
+                                        No messages yet. Write the first one.
                                     </div>
                                 ) : (
                                     messages.map((m) => {
@@ -1136,7 +1089,7 @@ export const Navbar = () => {
                                 <Button
                                     className="sq-chat-media-btn"
                                     onClick={handlePickImage}
-                                    title="Enviar foto"
+                                    title="Send photo"
                                     disabled={isRecording || !!editingMsgId}
                                 >
                                     <FiImage />
@@ -1144,7 +1097,7 @@ export const Navbar = () => {
                                 <Button
                                     className={`sq-chat-media-btn ${isRecording ? "recording" : ""}`}
                                     onClick={toggleRecording}
-                                    title={isRecording ? "Detener y enviar audio" : "Grabar audio"}
+                                    title={isRecording ? "Stop and send audio" : "Record audio"}
                                     disabled={!!editingMsgId}
                                 >
                                     {isRecording ? <FiSquare /> : <FiMic />}
@@ -1155,7 +1108,7 @@ export const Navbar = () => {
                                             ? "Grabando audio..."
                                             : editingMsgId
                                             ? "Editando un mensaje..."
-                                            : "Escribe un mensaje..."
+                                            : "Write a message..."
                                     }
                                     value={replyText}
                                     onChange={(e) => setReplyText(e.target.value)}
@@ -1186,7 +1139,7 @@ export const Navbar = () => {
                 </Modal.Body>
                 <Modal.Footer>
                     <Button variant="outline-light" onClick={closeChatModal}>
-                        Cerrar
+                        Close
                     </Button>
                 </Modal.Footer>
             </Modal>
@@ -1232,7 +1185,7 @@ const RoomCard = ({ room, currentUserId, onClick }) => {
                             {label}
                         </span>
                         <span className="sq-chat-type-badge">
-                            {isDm ? "DM" : "Evento"}
+                            {isDm ? "DM" : "Event"}
                         </span>
                     </div>
                     {last && (

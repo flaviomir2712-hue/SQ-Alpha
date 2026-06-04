@@ -23,7 +23,7 @@ const EDIT_WINDOW_MS = 15 * 60 * 1000;
 // ─────────────────────────────────────────────────────────────────
 const getRoomLabel = (room, currentUserId) => {
   if (!room) return "";
-  if (room.type === "event") return room.event_title || "Chat de evento";
+  if (room.type === "event") return room.event_title || "Event chat";
   if (room.type === "dm") {
     const p = room.dm_partner;
     if (p) return p.username || p.email || "Chat";
@@ -41,7 +41,7 @@ const getRoomAvatarUrl = (room) => {
 
 const getPreviewText = (last) => {
   if (!last) return null;
-  if (last.deleted) return "Mensaje eliminado";
+  if (last.deleted) return "Message deleted";
   if (last.text) return last.text;
   if (last.media_type === "image") return "📷 Foto";
   if (last.media_type === "audio") return "🎤 Audio";
@@ -329,7 +329,7 @@ const Messages = () => {
               </InputGroup.Text>
               <Form.Control
                 className="sq-msg-search-input"
-                placeholder="Buscar evento o amigo…"
+                placeholder="Search for an event or friend…"
                 value={searchQ}
                 onChange={(e) => setSearchQ(e.target.value)}
               />
@@ -341,9 +341,9 @@ const Messages = () => {
               <div className="text-center p-4"><Spinner size="sm" /></div>
             ) : showingSearch ? (
               <>
-                <div className="sq-msg-section">Chats de eventos</div>
+                <div className="sq-msg-section">Event chats</div>
                 {(searchResults?.event_rooms || []).length === 0 ? (
-                  <div className="sq-msg-empty">Sin resultados</div>
+                  <div className="sq-msg-empty">No results</div>
                 ) : (
                   searchResults.event_rooms.map((r) => (
                     <RoomItem
@@ -356,9 +356,9 @@ const Messages = () => {
                   ))
                 )}
 
-                <div className="sq-msg-section">Amigos</div>
+                <div className="sq-msg-section">Friends</div>
                 {(searchResults?.friends || []).length === 0 ? (
-                  <div className="sq-msg-empty">Sin resultados</div>
+                  <div className="sq-msg-empty">No results</div>
                 ) : (
                   searchResults.friends.map((f) => (
                     <FriendItem
@@ -373,11 +373,11 @@ const Messages = () => {
             ) : (
               safeRooms.length === 0 ? (
                 <div className="sq-msg-empty">
-                  No tienes chats activos.
+                  You have no active chats.
                   <div className="mt-2">
-                    <Link to="/friends" className="sq-msg-link">Busca un amigo</Link>{" "}
+                    <Link to="/friends" className="sq-msg-link">Find a friend</Link>{" "}
                     o{" "}
-                    <Link to="/events" className="sq-msg-link">crea un evento</Link>.
+                    <Link to="/events" className="sq-msg-link">create an event</Link>.
                   </div>
                 </div>
               ) : (
@@ -403,8 +403,8 @@ const Messages = () => {
           {!selectedRoom ? (
             <div className="sq-msg-empty-thread">
               <FiMessageSquare size={48} className="mb-3" />
-              <h5 className="mb-1">Selecciona una conversación</h5>
-              <p className="text-muted m-0">Elige un chat de la lista para empezar.</p>
+              <h5 className="mb-1">Select a conversation</h5>
+              <p className="text-muted m-0">Pick a chat from the list to get started.</p>
             </div>
           ) : (
             <>
@@ -414,7 +414,7 @@ const Messages = () => {
                   variant="dark"
                   className="border-0 sq-msg-back d-md-none"
                   onClick={() => navigate("/messages")}
-                  title="Volver"
+                  title="Back"
                 >
                   <FiArrowLeft />
                 </Button>
@@ -429,13 +429,13 @@ const Messages = () => {
                     {selectedRoom.type === "dm"
                       ? "DM"
                       : selectedRoom.event_title
-                        ? `Evento · ${selectedRoom.participants?.length || 0} participantes`
-                        : "Evento"}
+                        ? `Event · ${selectedRoom.participants?.length || 0} participants`
+                        : "Event"}
                   </div>
                 </div>
               </div>
 
-              {/* Mensajes */}
+              {/* Messages */}
               <div className="sq-msg-thread" ref={threadRef}>
                 {loading && safeMessages.length === 0 ? (
                   <div className="text-center pt-4">
@@ -443,7 +443,7 @@ const Messages = () => {
                   </div>
                 ) : safeMessages.length === 0 ? (
                   <div className="sq-msg-empty-msgs">
-                    No hay mensajes todavía. Escribe el primero 👇
+                    No messages yet. Write the first one 👇
                   </div>
                 ) : (
                   safeMessages.map((m) => {
@@ -476,7 +476,7 @@ const Messages = () => {
                       type="button"
                       onClick={handlePickImage}
                       disabled={isRecording || !!editingId}
-                      title="Enviar foto"
+                      title="Send photo"
                     >
                       <FiImage />
                     </Button>
@@ -485,7 +485,7 @@ const Messages = () => {
                       type="button"
                       onClick={toggleRecording}
                       disabled={!!editingId}
-                      title={isRecording ? "Detener y enviar" : "Grabar audio"}
+                      title={isRecording ? "Stop and send" : "Record audio"}
                     >
                       {isRecording ? <FiSquare /> : <FiMic />}
                     </Button>
@@ -495,8 +495,8 @@ const Messages = () => {
                         isRecording
                           ? "Grabando audio…"
                           : editingId
-                            ? "Editando un mensaje arriba…"
-                            : "Escribe un mensaje…"
+                            ? "Editing a message above…"
+                            : "Write a message…"
                       }
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
@@ -533,18 +533,18 @@ const Messages = () => {
         contentClassName="sq-msg-modal"
       >
         <Modal.Header closeButton closeVariant="white">
-          <Modal.Title>Eliminar mensaje</Modal.Title>
+          <Modal.Title>Delete message</Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          ¿Seguro que quieres eliminar este mensaje? Se mostrará como
-          <strong> "Mensaje eliminado"</strong> en la conversación.
+          Are you sure you want to delete this message? It will be shown as
+          <strong> "Message deleted"</strong> in the conversation.
         </Modal.Body>
         <Modal.Footer>
           <Button variant="outline-light" onClick={() => setDeleteTarget(null)}>
-            Cancelar
+            Cancel
           </Button>
           <Button variant="danger" onClick={doDelete}>
-            <FiTrash2 className="me-1" /> Eliminar
+            <FiTrash2 className="me-1" /> Delete
           </Button>
         </Modal.Footer>
       </Modal>
@@ -587,7 +587,7 @@ const RoomItem = ({ room, currentUserId, active, onClick }) => {
         <div className="sq-msg-room-row">
           <div className="sq-msg-room-title">
             {label}
-            <span className="sq-msg-room-type">{isDm ? "DM" : "Evento"}</span>
+            <span className="sq-msg-room-type">{isDm ? "DM" : "Event"}</span>
           </div>
           {last && (
             <div className="sq-msg-room-time">{formatTime(last.created_at)}</div>
@@ -599,7 +599,7 @@ const RoomItem = ({ room, currentUserId, active, onClick }) => {
               {last.sender_id === currentUserId ? "Tú: " : ""}{preview}
             </div>
           ) : (
-            <div className="sq-msg-room-preview muted">Sin mensajes</div>
+            <div className="sq-msg-room-preview muted">No messages</div>
           )}
           {unread > 0 && (
             <span className="sq-msg-room-unread">{unread > 99 ? "99+" : unread}</span>
@@ -632,7 +632,7 @@ const FriendItem = ({ friend, onOpen, onStartDm }) => {
           </div>
         </div>
         <div className="sq-msg-room-preview muted">
-          {room ? "Conversación existente" : "Iniciar conversación 1 a 1"}
+          {room ? "Existing conversation" : "Start a 1-on-1 conversation"}
         </div>
       </div>
     </div>
@@ -648,7 +648,7 @@ const MessageBubble = ({
     return (
       <div className={`sq-msg-row ${mine ? "mine" : ""}`}>
         <div className="sq-msg-bubble deleted">
-          <em>🚫 Mensaje eliminado</em>
+          <em>🚫 Message deleted</em>
           <div className="sq-msg-meta">{formatFullTime(m.created_at)}</div>
         </div>
       </div>
@@ -712,7 +712,7 @@ const MessageBubble = ({
                   size="sm"
                   className="sq-msg-action-btn danger"
                   onClick={() => onDelete(m)}
-                  title="Eliminar"
+                  title="Delete"
                 >
                   <FiTrash2 />
                 </Button>

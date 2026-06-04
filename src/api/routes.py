@@ -97,6 +97,18 @@ def _are_friends(user_a_id, user_b_id):
     ).first() is not None
 
 
+def _get_friend_ids(user_id):
+    """Return the list of user IDs who are accepted friends of `user_id`."""
+    rows = Friendship.query.filter(
+        Friendship.status == "accepted",
+        (Friendship.requester_id == user_id) | (Friendship.addressee_id == user_id),
+    ).all()
+    ids = []
+    for f in rows:
+        ids.append(f.addressee_id if f.requester_id == user_id else f.requester_id)
+    return ids
+
+
 # =========================================================
 # HELLO
 # =========================================================
@@ -223,6 +235,8 @@ def create_event():
 
     creator = db.session.get(User, current_user_id)
 
+    is_public = bool(body.get("is_public", False))
+
     event = Event(
         title=body.get("title"),
         date=body["date"],
@@ -232,6 +246,7 @@ def create_event():
         longitude=body.get("longitude"),
         details=body.get("details"),
         image=body.get("image"),
+        is_public=is_public,
         creator_id=current_user_id,
     )
     event.participants.append(creator)
@@ -247,10 +262,19 @@ def create_event():
     room = ChatRoom(type="event", event_id=event.id)
     db.session.add(room)
 
+    # Build the list of user IDs to invite.
+    #  - Private event: only the friends explicitly chosen in invitedFriends.
+    #  - Public event:  every accepted friend of the creator (plus any explicit
+    #    picks, deduplicated). This auto-invites the whole friend list so the
+    #    event shows up for them as a pending invitation.
+    invite_ids = list(body.get("invitedFriends", []))
+    if is_public:
+        invite_ids = invite_ids + _get_friend_ids(current_user_id)
+
     # Invitations on creation
     invitations = []
     seen = {current_user_id}
-    for friend_id in body.get("invitedFriends", []):
+    for friend_id in invite_ids:
         if friend_id in seen:
             continue
         friend = db.session.get(User, friend_id)
@@ -265,10 +289,13 @@ def create_event():
 
     db.session.flush()
 
+    # Notification type differs by visibility so the frontend can label it
+    # ("X invited you" vs "X created a public event").
+    notif_type = "event_public" if is_public else "event_invite"
     for friend, inv in invitations:
         _create_notification(
             user_id=friend.id,
-            notif_type="event_invite",
+            notif_type=notif_type,
             payload={
                 "event_id": event.id,
                 "invitation_id": inv.id,
@@ -360,6 +387,46 @@ def update_event(event_id):
     for field in editable:
         if field in body:
             setattr(event, field, body[field])
+
+    # Handle the public/private toggle. When an event is switched from private
+    # to public we auto-invite any friends who aren't already participants or
+    # invitees, mirroring the behaviour at creation time.
+    if "is_public" in body:
+        new_public = bool(body["is_public"])
+        was_public = bool(event.is_public)
+        event.is_public = new_public
+
+        if new_public and not was_public:
+            creator = db.session.get(User, current_user_id)
+            existing_participant_ids = {p.id for p in event.participants}
+            existing_invite_ids = {inv.user_id for inv in (event.invitations or [])}
+            new_invites = []
+            for friend_id in _get_friend_ids(current_user_id):
+                if friend_id in existing_participant_ids or friend_id in existing_invite_ids:
+                    continue
+                friend = db.session.get(User, friend_id)
+                if not friend:
+                    continue
+                inv = EventInvitation(
+                    event_id=event.id, user_id=friend.id, inviter_id=current_user_id
+                )
+                db.session.add(inv)
+                new_invites.append((friend, inv))
+            db.session.flush()
+            for friend, inv in new_invites:
+                _create_notification(
+                    user_id=friend.id,
+                    notif_type="event_public",
+                    payload={
+                        "event_id": event.id,
+                        "invitation_id": inv.id,
+                        "from_user_id": current_user_id,
+                        "from_email": creator.email if creator else None,
+                        "event_title": event.title,
+                        "event_date": event.date,
+                        "event_time": event.time,
+                    },
+                )
 
     db.session.commit()
     return jsonify({"msg": "Event updated", "event": event.serialize(current_user_id=current_user_id)}), 200
@@ -1162,11 +1229,11 @@ def _compute_stats(user_id):
 
     activity_avg_per_week = round(recent_count / 4.0, 2)
     if activity_avg_per_week < 2:
-        activity_level = "Peu actif"
+        activity_level = "Low activity"
     elif activity_avg_per_week < 3:
-        activity_level = "Actif"
+        activity_level = "Active"
     else:
-        activity_level = "Très actif"
+        activity_level = "Very active"
     activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
 
     return {

@@ -25,6 +25,7 @@ import {
   FiUserX,
   FiTrash2,
   FiClock,
+  FiMessageSquare,
 } from "react-icons/fi";
 
 // =============================================================
@@ -75,6 +76,16 @@ const apiUnfriend = (userId) =>
   fetch(`${API}/api/friends/${userId}`, {
     method: "DELETE",
     headers: authHeaders(),
+  }).then(handle);
+
+// Create a DM with this user, or return the existing one. The backend
+// (/chat/dm) is idempotent: it returns the existing room if there is one,
+// or creates a new room otherwise. Either way we get back room.id.
+const apiCreateOrGetDm = (userId) =>
+  fetch(`${API}/api/chat/dm`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ user_id: userId }),
   }).then(handle);
 
 // =============================================================
@@ -151,8 +162,8 @@ const fullName = (user) => {
 };
 
 const levelColor = (level) => {
-  if (level === "Très actif") return "success";
-  if (level === "Actif") return "info";
+  if (level === "Very active") return "success";
+  if (level === "Active") return "info";
   return "secondary";
 };
 
@@ -260,6 +271,26 @@ export const FriendProfile = () => {
     }
   };
 
+  // Open the DM with this friend — creates it if it doesn't exist yet,
+  // then jumps to the full chat page for that room.
+  const handleMessage = async () => {
+    if (!profile) return;
+    setBusy(true);
+    try {
+      const data = await apiCreateOrGetDm(profile.id);
+      const roomId = data?.room?.id;
+      if (roomId) {
+        navigate(`/messages/${roomId}`);
+      } else {
+        navigate("/messages");
+      }
+    } catch (e) {
+      showToast(e.message, "danger");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // =====================================================
   // RENDER
   // =====================================================
@@ -272,13 +303,22 @@ export const FriendProfile = () => {
 
     if (status === "accepted") {
       return (
-        <Button
-          variant="outline-danger"
-          disabled={busy}
-          onClick={() => setConfirmRemove(true)}
-        >
-          <FiTrash2 className="me-1" /> Remove friend
-        </Button>
+        <div className="d-flex gap-2 flex-wrap">
+          <Button
+            variant="primary"
+            disabled={busy}
+            onClick={handleMessage}
+          >
+            <FiMessageSquare className="me-1" /> Message
+          </Button>
+          <Button
+            variant="outline-danger"
+            disabled={busy}
+            onClick={() => setConfirmRemove(true)}
+          >
+            <FiTrash2 className="me-1" /> Remove friend
+          </Button>
+        </div>
       );
     }
 

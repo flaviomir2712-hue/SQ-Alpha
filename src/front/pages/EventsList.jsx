@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   Container,
   Row,
@@ -21,13 +20,15 @@ import {
   FiUsers,
   FiSearch,
   FiPlus,
-  FiImage,
   FiCheckCircle,
   FiHelpCircle,
   FiXCircle,
+  FiGlobe,
+  FiLock,
 } from "react-icons/fi";
 
 import { EventModal } from "../components/EventModal";
+import { Calendar } from "./Calendar";
 
 // =============================================================
 // INLINE API + STYLES
@@ -86,10 +87,11 @@ const CSS = `
 }
 .event-card-noimg {
   width: 100%; height: 140px;
-  background: linear-gradient(135deg, #1e2230, #0f111a);
+  background: #0b0d12;
   display: flex; align-items: center; justify-content: center;
-  color: #2a2f42; border-bottom: 1px solid #262a36;
+  border-bottom: 1px solid #262a36;
 }
+.event-card-noimg img { width: 72px; height: 72px; object-fit: contain; opacity: 0.55; }
 .events-list-page .form-control,
 .events-list-page .form-control:focus {
   background-color: #0f111a !important;
@@ -152,50 +154,24 @@ const CSS = `
 .status-pill.accepted { background: #4f46e5 !important; }
 .status-pill.creator  { background: #22d3ee !important; color: #0b0d12 !important; }
 
-/* ── XS / small phones (< 576px) ─────────────────────────── */
-@media (max-width: 575.98px) {
-  .events-list-page { padding-top: 70px; padding-bottom: 90px; }
-  .events-list-page h1 { font-size: 1.35rem; }
-  .events-list-page > .container { padding-left: 0.85rem; padding-right: 0.85rem; }
-
-  /* The 4 tabs (All/Created/Invitado/Past) overflow horizontally on
-     narrow screens — scroll instead of wrap. */
-  .events-list-page .nav-tabs {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
-  .events-list-page .nav-tabs::-webkit-scrollbar { display: none; }
-  .events-list-page .nav-tabs .nav-link {
-    white-space: nowrap;
-    font-size: 0.82rem;
-    padding: 0.45rem 0.7rem;
-  }
-
-  /* Card body tighter padding */
-  .event-card .card-body { padding: 0.85rem; }
-  .event-card-img, .event-card-noimg { height: 120px; }
-
-  /* The title row can hold title + pills + 📍. On very narrow screens
-     give the right-side cluster the freedom to wrap to the next line. */
-  .event-card .card-body > .d-flex {
-    flex-wrap: wrap;
-  }
-
-  /* Response bar buttons tighter */
-  .rsvp-bar { gap: 3px; }
-  .rsvp-btn { font-size: 0.7rem; padding: 5px 1px; }
+/* Public / private visibility chip */
+.vis-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.68rem; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid #262a36; background: #0f111a;
 }
+.vis-chip.public  { color: #22d3ee; border-color: rgba(34,211,238,0.4); }
+.vis-chip.private { color: #adb5bd; }
 `;
 
 // =============================================================
 // RESPONSE OPTIONS
 // =============================================================
 const RESPONSE_OPTIONS = [
-  { value: "going",     label: "Voy",     icon: <FiCheckCircle size={12} /> },
-  { value: "maybe",     label: "Tal vez", icon: <FiHelpCircle  size={12} /> },
-  { value: "not_going", label: "No voy",  icon: <FiXCircle     size={12} /> },
+  { value: "going",     label: "Going",     icon: <FiCheckCircle size={12} /> },
+  { value: "maybe",     label: "Maybe",     icon: <FiHelpCircle  size={12} /> },
+  { value: "not_going", label: "Not going",  icon: <FiXCircle     size={12} /> },
 ];
 
 // =============================================================
@@ -233,7 +209,7 @@ const ResponseBar = ({ eventId, myStatus, initialRsvp, onChanged }) => {
           onClick={(e) => handleClick(e, opt.value)}
           title={
             myStatus === "pending"
-              ? (opt.value === "not_going" ? "Rechazar invitación" : `Aceptar (${opt.label})`)
+              ? (opt.value === "not_going" ? "Decline invitation" : `Accept (${opt.label})`)
               : opt.label
           }
         >
@@ -247,16 +223,7 @@ const ResponseBar = ({ eventId, myStatus, initialRsvp, onChanged }) => {
 // =============================================================
 // MAIN
 // =============================================================
-// Navigate to /map?event=<id> — the Mapview component reads this param
-// and flies to the event's coords (force-showing the marker even when
-// the user has a pending invitation for it).
-const goToEventOnMap = (navigate, eventId) => (e) => {
-  e.stopPropagation();   // do NOT trigger the card click that opens the modal
-  navigate(`/map?event=${eventId}`);
-};
-
 export const EventsList = () => {
-  const navigate = useNavigate();
   const [events, setEvents]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -343,8 +310,8 @@ export const EventsList = () => {
 
   const statusPill = (e) => {
     if (e.creator_id === myId) return <Badge className="status-pill creator">Creator</Badge>;
-    if (e.my_status === "pending")  return <Badge className="status-pill pending">Invitado</Badge>;
-    if (e.my_status === "accepted") return <Badge className="status-pill accepted">Voy</Badge>;
+    if (e.my_status === "pending")  return <Badge className="status-pill pending">Invited</Badge>;
+    if (e.my_status === "accepted") return <Badge className="status-pill accepted">Going</Badge>;
     return <Badge bg="secondary">—</Badge>;
   };
 
@@ -373,34 +340,39 @@ export const EventsList = () => {
           </Alert>
         )}
 
-        <Card className="event-card mb-4" style={{ cursor: "default" }}>
-          <Card.Body>
-            <InputGroup>
-              <InputGroup.Text className="bg-dark border-secondary text-light">
-                <FiSearch />
-              </InputGroup.Text>
-              <Form.Control
-                placeholder="Search by title, location or details..."
-                value={searchQ}
-                onChange={(e) => setSearchQ(e.target.value)}
-              />
-              {searchQ && (
-                <Button variant="outline-secondary" onClick={() => setSearchQ("")}>
-                  Clear
-                </Button>
-              )}
-            </InputGroup>
-          </Card.Body>
-        </Card>
+        {tab !== "calendar" && (
+          <Card className="event-card mb-4" style={{ cursor: "default" }}>
+            <Card.Body>
+              <InputGroup>
+                <InputGroup.Text className="bg-dark border-secondary text-light">
+                  <FiSearch />
+                </InputGroup.Text>
+                <Form.Control
+                  placeholder="Search by title, location or details..."
+                  value={searchQ}
+                  onChange={(e) => setSearchQ(e.target.value)}
+                />
+                {searchQ && (
+                  <Button variant="outline-secondary" onClick={() => setSearchQ("")}>
+                    Clear
+                  </Button>
+                )}
+              </InputGroup>
+            </Card.Body>
+          </Card>
+        )}
 
         <Tabs activeKey={tab} onSelect={(k) => setTab(k)} className="mb-3" fill>
-          <Tab eventKey="all"     title={<span>All     <Badge bg="secondary">{counts.all}</Badge></span>} />
-          <Tab eventKey="created" title={<span>Created <Badge bg="secondary">{counts.created}</Badge></span>} />
-          <Tab eventKey="pending" title={<span>Invitado <Badge bg="warning" text="dark">{counts.pending}</Badge></span>} />
-          <Tab eventKey="past"    title={<span>Past    <Badge bg="secondary">{counts.past}</Badge></span>} />
+          <Tab eventKey="all"      title={<span>All     <Badge bg="secondary">{counts.all}</Badge></span>} />
+          <Tab eventKey="created"  title={<span>Created <Badge bg="secondary">{counts.created}</Badge></span>} />
+          <Tab eventKey="pending"  title={<span>Invited <Badge bg="warning" text="dark">{counts.pending}</Badge></span>} />
+          <Tab eventKey="past"     title={<span>Past    <Badge bg="secondary">{counts.past}</Badge></span>} />
+          <Tab eventKey="calendar" title={<span><FiCalendar className="me-1" />Calendar</span>} />
         </Tabs>
 
-        {loading ? (
+        {tab === "calendar" ? (
+          <Calendar embedded />
+        ) : loading ? (
           <div className="text-center py-5 text-secondary">
             <Spinner animation="border" />
           </div>
@@ -426,7 +398,7 @@ export const EventsList = () => {
                     <img src={e.image} alt={e.title || "event"} className="event-card-img" />
                   ) : (
                     <div className="event-card-noimg">
-                      <FiImage size={42} />
+                      <img src="/logoSideQuest.png" alt="SideQuest" />
                     </div>
                   )}
 
@@ -435,31 +407,14 @@ export const EventsList = () => {
                       <strong className="text-light text-truncate">
                         {e.title || "(untitled event)"}
                       </strong>
-                      <div className="d-flex align-items-center gap-1">
-                        {/* 📍 Deep-link to the map at this event's location.
-                            Disabled if the event has no coords (can't
-                            possibly show on the map). */}
-                        {e.latitude != null && e.longitude != null && (
-                          <button
-                            type="button"
-                            className="btn btn-sm sq-go-to-map"
-                            onClick={goToEventOnMap(navigate, e.id)}
-                            title="Ver en el mapa"
-                            style={{
-                              padding: "2px 6px",
-                              background: "rgba(99,102,241,0.15)",
-                              border: "1px solid #6366f1",
-                              borderRadius: 6,
-                              color: "#a5b4fc",
-                              display: "inline-flex",
-                              alignItems: "center",
-                            }}
-                          >
-                            <FiMapPin size={14} />
-                          </button>
-                        )}
-                        {statusPill(e)}
-                      </div>
+                      {statusPill(e)}
+                    </div>
+
+                    <div className="mb-2">
+                      <span className={`vis-chip ${e.is_public ? "public" : "private"}`}>
+                        {e.is_public ? <FiGlobe size={12} /> : <FiLock size={12} />}
+                        {e.is_public ? "Public" : "Private"}
+                      </span>
                     </div>
 
                     <div className="event-meta mb-1">
@@ -474,7 +429,7 @@ export const EventsList = () => {
                       <FiUsers /> {e.participants_count} participant{e.participants_count !== 1 ? "s" : ""}
                       {e.going_count > 0 && (
                         <span className="ms-2 small text-info">
-                          ({e.going_count} voy)
+                          ({e.going_count} going)
                         </span>
                       )}
                     </div>

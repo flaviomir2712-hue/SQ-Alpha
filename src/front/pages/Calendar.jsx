@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Spinner, Alert } from "react-bootstrap";
 import {
   FiChevronLeft, FiChevronRight, FiCalendar, FiClock, FiMapPin,
@@ -61,15 +60,7 @@ function buildCells(year, month) {
 }
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
-// Deep-link to the map at this event — Mapview reads ?event=<id> and
-// flies to the coords, force-showing the marker even if pending.
-const goToEventOnMap = (navigate, eventId) => (e) => {
-  e.stopPropagation();
-  navigate(`/map?event=${eventId}`);
-};
-
-export const Calendar = () => {
-  const navigate = useNavigate();
+export const Calendar = ({ embedded = false } = {}) => {
   const today = new Date();
   const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
 
@@ -157,17 +148,19 @@ export const Calendar = () => {
     (e.my_status === "pending" || e.my_status === "accepted");
 
   return (
-    <div style={S.page}>
+    <div style={embedded ? S.embeddedWrap : S.page}>
       <style>{CSS}</style>
 
-      {/* HEADER */}
-      <div style={S.header}>
-        <div style={S.headerRow}>
-          <FiCalendar size={22} color="#6366f1" />
-          <h1 style={S.title}>Calendar</h1>
+      {/* HEADER — only shown on the standalone page, not when embedded */}
+      {!embedded && (
+        <div style={S.header}>
+          <div style={S.headerRow}>
+            <FiCalendar size={22} color="#6366f1" />
+            <h1 style={S.title}>Calendar</h1>
+          </div>
+          <p style={S.subtitle}>All your events at a glance</p>
         </div>
-        <p style={S.subtitle}>All your events at a glance</p>
-      </div>
+      )}
 
       {error && (
         <div style={{ padding: "0 1rem" }}>
@@ -261,21 +254,10 @@ export const Calendar = () => {
                       <div style={S.eventTitle}>
                         {ev.title || "(untitled)"}
                         {ev.my_status === "pending" && (
-                          <span style={S.pendingTag}>Invitado</span>
+                          <span style={S.pendingTag}>Invited</span>
                         )}
                         {ev.creator_id === myId && (
                           <span style={S.creatorTag}>Creator</span>
-                        )}
-                        {/* 📍 Deep-link to map */}
-                        {ev.latitude != null && ev.longitude != null && (
-                          <button
-                            type="button"
-                            onClick={goToEventOnMap(navigate, ev.id)}
-                            title="Ver en el mapa"
-                            style={S.mapPin}
-                          >
-                            <FiMapPin size={11} />
-                          </button>
                         )}
                       </div>
                       <div style={S.eventMeta}>
@@ -296,21 +278,21 @@ export const Calendar = () => {
                             disabled={busyEventId === ev.id}
                             onClick={(e) => handleRespond(ev.id, "going", e)}
                           >
-                            <FiCheckCircle size={11} /> Voy
+                            <FiCheckCircle size={11} /> Going
                           </button>
                           <button
                             className={`cal-rsvp-btn maybe ${ev.my_rsvp === "maybe" ? "active" : ""}`}
                             disabled={busyEventId === ev.id}
                             onClick={(e) => handleRespond(ev.id, "maybe", e)}
                           >
-                            <FiHelpCircle size={11} /> Tal vez
+                            <FiHelpCircle size={11} /> Maybe
                           </button>
                           <button
                             className={`cal-rsvp-btn not_going ${ev.my_rsvp === "not_going" ? "active" : ""}`}
                             disabled={busyEventId === ev.id}
                             onClick={(e) => handleRespond(ev.id, "not_going", e)}
                           >
-                            <FiXCircle size={11} /> No voy
+                            <FiXCircle size={11} /> Not going
                           </button>
                         </div>
                       )}
@@ -352,6 +334,7 @@ const S = {
     paddingBottom: 100,
   },
   header:     { padding: "0 1.25rem 1rem" },
+  embeddedWrap: { color: "#e9ecef", paddingBottom: 20 },
   headerRow:  { display: "flex", alignItems: "center", gap: 10, marginBottom: 4 },
   title:      { margin: 0, fontSize: "1.6rem", fontWeight: 700, color: "#fff" },
   subtitle:   { margin: 0, color: "#6c757d", fontSize: "0.9rem" },
@@ -381,18 +364,6 @@ const S = {
     fontSize: "0.6rem", padding: "1px 6px", borderRadius: 999,
     background: "#22d3ee", color: "#0b0d12", fontWeight: 700,
     textTransform: "uppercase", letterSpacing: "0.04em",
-  },
-  mapPin: {
-    background: "rgba(99,102,241,0.18)",
-    border: "1px solid #6366f1",
-    color: "#a5b4fc",
-    borderRadius: 6,
-    padding: "0 5px",
-    height: 18,
-    display: "inline-flex",
-    alignItems: "center",
-    cursor: "pointer",
-    marginLeft: 2,
   },
 };
 
@@ -486,25 +457,4 @@ const CSS = `
 .cal-rsvp-btn.active.maybe     { background: rgba(250,204,21,0.15); border-color: #facc15; color: #facc15; }
 .cal-rsvp-btn.active.not_going { background: rgba(244,63,94,0.15);  border-color: #f43f5e; color: #f43f5e; }
 .cal-rsvp-btn:disabled { opacity: 0.45; pointer-events: none; }
-
-/* ── XS / small phones (< 576px) ─────────────────────────── */
-@media (max-width: 575.98px) {
-  /* Cells shrink so the 7-column grid still fits comfortably. The pills
-     inside truncate but no longer overflow horizontally. */
-  .cal-cell {
-    min-height: 64px;
-    padding: 2px 1px;
-  }
-  .cal-num { font-size: 0.7rem; padding-right: 2px; }
-  .cal-pill { padding: 1px 3px; margin-bottom: 1px; }
-  .cal-pill-title { font-size: 0.6rem; }
-  .cal-pill-time { font-size: 0.55rem; }
-  .cal-more { font-size: 0.55rem; }
-
-  /* Day-of-week labels shorter */
-  /* (the JS shows 3-letter days already — just shrink the font) */
-
-  /* Response bar buttons fit on a single line by shrinking text */
-  .cal-rsvp-btn { font-size: 0.62rem; padding: 3px 4px; }
-}
 `;

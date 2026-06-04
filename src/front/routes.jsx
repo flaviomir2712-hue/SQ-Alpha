@@ -13,7 +13,6 @@ import { Login } from "./pages/Login";
 import { Friends } from "./pages/Friends";
 import { FriendProfile } from "./pages/FriendProfile";
 import { EventsList } from "./pages/EventsList";
-import { Calendar } from "./pages/Calendar";
 import Map from "./pages/Map";
 import Messages from "./pages/Messages";
 
@@ -32,7 +31,6 @@ export const router = createBrowserRouter(
       <Route path="/friends" element={<Friends />} />
       <Route path="/friends/:userId" element={<FriendProfile />} />
       <Route path="/events" element={<EventsList />} />
-      <Route path="/calendar" element={<Calendar />} />
       <Route path="/map" element={<Map />} />
 
       {/* Messages — page dedicated */}

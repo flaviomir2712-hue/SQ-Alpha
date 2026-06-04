@@ -35,6 +35,9 @@ import {
   FiXCircle,
   FiLogOut,
   FiUserCheck,
+  FiGlobe,
+  FiLock,
+  FiMaximize2,
 } from "react-icons/fi";
 
 // =============================================================
@@ -262,7 +265,7 @@ const EVENT_CSS = `
 }
 body.modal-open .bottom-navbar { display: none; }
 
-/* ── RESPONSE BAR (Voy / Tal vez / No voy) ── */
+/* ── RESPONSE BAR (Going / Maybe / Not going) ── */
 .sq-response-bar {
   display: flex; gap: 6px; padding: 10px;
   background: #0f111a; border: 1px solid #262a36; border-radius: 12px;
@@ -339,57 +342,32 @@ body.modal-open .bottom-navbar { display: none; }
 .sq-friend-checkbox-row:hover { background: #1e2230; }
 .sq-friend-checkbox-row.selected { background: rgba(99,102,241,0.12); }
 
-/* ── XS / small phones (< 576px) ─────────────────────────── */
-@media (max-width: 575.98px) {
-  /* Modal near full-screen → max room for content. */
-  .event-modal .modal-dialog {
-    margin: 4px;
-    width: calc(100vw - 8px);
-    max-width: calc(100vw - 8px);
-  }
-  .event-modal .modal-content { border-radius: 10px; }
-  .event-modal .modal-body { padding: 0.85rem; }
-  .event-modal .modal-header { padding: 0.65rem 0.85rem; }
-  .event-modal .modal-footer { padding: 0.55rem 0.85rem; gap: 0.4rem; }
-
-  /* Tabs scroll horizontally instead of wrapping into 2 rows */
-  .event-modal .nav-tabs {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-  }
-  .event-modal .nav-tabs::-webkit-scrollbar { display: none; }
-  .event-modal .nav-tabs .nav-link {
-    white-space: nowrap;
-    font-size: 0.82rem;
-    padding: 0.4rem 0.6rem;
-  }
-
-  /* Response bar: tighter padding, smaller text */
-  .sq-response-bar { padding: 7px; gap: 4px; margin-bottom: 0.75rem; }
-  .sq-response-btn {
-    padding: 6px 4px;
-    font-size: 0.76rem;
-    gap: 4px;
-  }
-
-  /* Chat tab box uses more vertical room */
-  .chat-box { height: 50vh; }
-  .chat-msg .bubble { max-width: 90%; }
-
-  /* Creator row tighter on phones */
-  .sq-creator-row { padding: 0.4rem 0; }
-  .sq-creator-avatar { width: 30px; height: 30px; }
-
-  /* Suggestion rows + friend rows fold gracefully */
-  .sq-suggestion-row, .sq-friend-checkbox-row {
-    padding: 0.45rem 0.55rem; gap: 0.5rem;
-  }
-
-  /* Section labels in form */
-  .event-modal .form-label { font-size: 0.72rem; margin-bottom: 0.2rem; }
+/* Visibility (public / private) toggle */
+.visibility-toggle { display: flex; gap: 8px; }
+.visibility-toggle .vis-option {
+  flex: 1;
+  display: flex; align-items: center;
+  gap: 4px;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid #262a36;
+  background: #0f111a;
+  color: #adb5bd;
+  cursor: pointer;
+  transition: all 0.12s ease;
 }
+.visibility-toggle .vis-option:hover:not(:disabled) { border-color: #3a3f55; color: #e9ecef; }
+.visibility-toggle .vis-option.active {
+  border-color: #6366f1;
+  background: rgba(99,102,241,0.12);
+  color: #fff;
+}
+.visibility-toggle .vis-option:disabled { opacity: 0.5; cursor: not-allowed; }
+.visibility-toggle .vis-option span { display: flex; flex-direction: column; line-height: 1.25; }
+.visibility-toggle .vis-option strong { font-size: 0.9rem; }
+.visibility-toggle .vis-option small { font-size: 0.7rem; color: #6c757d; }
+.visibility-toggle .vis-option.active small { color: #adb5bd; }
 `;
 
 // =============================================================
@@ -440,36 +418,6 @@ const reverseGeocode = async (lat, lng) => {
   }
 };
 
-// Forward geocode (address → suggestions). Used for the autocomplete in
-// the location input. Returns up to 5 hits with display_name + lat/lng.
-// Nominatim asks users to throttle and identify the app via User-Agent;
-// the browser sets one automatically — keeping calls debounced is what
-// matters most.
-const searchAddress = async (query) => {
-  if (!query || query.trim().length < 3) return [];
-  try {
-    const params = new URLSearchParams({
-      format: "json",
-      q: query.trim(),
-      limit: "5",
-      addressdetails: "0",
-    });
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?${params.toString()}`,
-      { headers: { "Accept": "application/json" } }
-    );
-    if (!res.ok) return [];
-    const arr = await res.json();
-    return arr.map((item) => ({
-      label: item.display_name,
-      lat: parseFloat(item.lat),
-      lng: parseFloat(item.lon),
-    }));
-  } catch {
-    return [];
-  }
-};
-
 // =============================================================
 // MAIN
 // =============================================================
@@ -490,9 +438,9 @@ export const EventModal = ({
   onSaved = () => {},
   onDeleted = () => {},
 }) => {
-  const navigate = useNavigate();
   const isEditMode = !!eventId;
   const [tab, setTab] = useState("details");
+  const navigate = useNavigate();
 
   // --- form state ---
   const [form, setForm] = useState({
@@ -502,6 +450,7 @@ export const EventModal = ({
     location: "",
     details: "",
     image: "",
+    is_public: false,
     latitude: null,
     longitude: null,
   });
@@ -536,18 +485,6 @@ export const EventModal = ({
 
   const fileInputRef = useRef(null);
 
-  // Location autocomplete state ----------------------------------
-  // The autocomplete search is now driven by the input's own onChange
-  // (`handleLocationChange`), NOT by a useEffect on `form.location`.
-  // That way the dropdown only opens when the user actively types in
-  // the bar — hydrating an existing event, picking a suggestion, or
-  // the reverse-geocode after a map click all bypass the search
-  // because they go through setForm directly, not the input event.
-  const [addressSuggestions, setAddressSuggestions] = useState([]);
-  const [showAddressDropdown, setShowAddressDropdown] = useState(false);
-  const [addressSearching, setAddressSearching] = useState(false);
-  const locationDebounceRef = useRef(null);
-
   // =====================================================
   // LOAD on open
   // =====================================================
@@ -574,85 +511,20 @@ export const EventModal = ({
         location:  "",
         details:   "",
         image:     "",
+        is_public: false,
         latitude:  prefillCoords?.latitude ?? null,
         longitude: prefillCoords?.longitude ?? null,
       });
       setEventData(null);
 
       if (prefillCoords?.latitude && prefillCoords?.longitude) {
-        // reverseGeocode goes through setForm directly — no input
-        // event, so the autocomplete is NOT triggered (clean).
         reverseGeocode(prefillCoords.latitude, prefillCoords.longitude).then((addr) => {
           if (addr) setForm((f) => ({ ...f, location: addr }));
         });
       }
     }
-    // Make sure any stale dropdown is cleared when the modal reopens.
-    setAddressSuggestions([]);
-    setShowAddressDropdown(false);
-    setAddressSearching(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, eventId]);
-
-  // Cleanup the pending debounce when the modal closes so an in-flight
-  // search doesn't pop the dropdown after the user already left.
-  useEffect(() => {
-    if (show) return;
-    if (locationDebounceRef.current) {
-      clearTimeout(locationDebounceRef.current);
-      locationDebounceRef.current = null;
-    }
-  }, [show]);
-
-  // Address input typing handler. Replaces the previous useEffect-based
-  // search so the dropdown only opens when the user is actually typing
-  // in the bar — never on hydrate, reverseGeocode, or suggestion pick.
-  const handleLocationChange = (e) => {
-    const newValue = e.target.value;
-    setForm((f) => ({ ...f, location: newValue }));
-
-    // Cancel any previous debounce — last keystroke wins.
-    if (locationDebounceRef.current) {
-      clearTimeout(locationDebounceRef.current);
-      locationDebounceRef.current = null;
-    }
-
-    const q = newValue.trim();
-    if (q.length < 3) {
-      setAddressSuggestions([]);
-      setShowAddressDropdown(false);
-      setAddressSearching(false);
-      return;
-    }
-
-    setAddressSearching(true);
-    locationDebounceRef.current = setTimeout(async () => {
-      const results = await searchAddress(q);
-      setAddressSuggestions(results);
-      setShowAddressDropdown(results.length > 0);
-      setAddressSearching(false);
-      locationDebounceRef.current = null;
-    }, 400);
-  };
-
-  // User picked one of the autocomplete suggestions — commit lat/lng so
-  // the new marker lands exactly on the address they chose.
-  const handlePickAddress = (sug) => {
-    setForm((f) => ({
-      ...f,
-      location:  sug.label,
-      latitude:  sug.lat,
-      longitude: sug.lng,
-    }));
-    setAddressSuggestions([]);
-    setShowAddressDropdown(false);
-    setAddressSearching(false);
-    // Cancel any in-flight search so it doesn't reopen the dropdown.
-    if (locationDebounceRef.current) {
-      clearTimeout(locationDebounceRef.current);
-      locationDebounceRef.current = null;
-    }
-  };
 
   const hydrate = async () => {
     setLoading(true);
@@ -666,6 +538,7 @@ export const EventModal = ({
         location:  data.location  || "",
         details:   data.details   || "",
         image:     data.image     || "",
+        is_public: !!data.is_public,
         latitude:  data.latitude,
         longitude: data.longitude,
       });
@@ -729,17 +602,12 @@ export const EventModal = ({
   const handleImage = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 1.5 * 1024 * 1024) {
+      showToast("Image too large (max 1.5 MB)", "danger");
+      return;
+    }
     try {
-      // Event cover photos use the "event" preset (maxSide 1600). A 25 MB
-      // shot from a phone comes out around 300-500 KB after compression.
-      let b64;
-      try {
-        const { compressImage } = await import("../utils/uploadImage");
-        b64 = await compressImage(file, "event");
-      } catch (compressErr) {
-        console.error("Compression failed, falling back to raw base64:", compressErr);
-        b64 = await fileToBase64(file);
-      }
+      const b64 = await fileToBase64(file);
       setForm((f) => ({ ...f, image: b64 }));
       if (isEditMode) {
         const data = await apiUpdateEvent(eventId, { image: b64 });
@@ -773,6 +641,7 @@ export const EventModal = ({
           time:      form.time,
           location:  form.location,
           details:   form.details,
+          is_public: form.is_public,
           latitude:  form.latitude,
           longitude: form.longitude,
         });
@@ -787,6 +656,7 @@ export const EventModal = ({
           location:  form.location,
           details:   form.details,
           image:     form.image || null,
+          is_public: form.is_public,
           latitude:  form.latitude,
           longitude: form.longitude,
           invitedFriends: invitedIds,
@@ -850,7 +720,7 @@ export const EventModal = ({
       const sent = (data.suggestions || []).length;
       const skipped = (data.skipped || []).length;
       showToast(
-        skipped > 0 ? `${sent} sugerencia(s) enviada(s), ${skipped} omitida(s)` : `${sent} sugerencia(s) enviada(s)`
+        skipped > 0 ? `${sent} suggestion(s) sent, ${skipped} skipped` : `${sent} suggestion(s) sent`
       );
     } catch (e) {
       showToast(e.message, "danger");
@@ -879,7 +749,7 @@ export const EventModal = ({
       const data = await apiApproveSuggestion(eventId, sid);
       setEventData(data.event);
       await reloadSuggestions();
-      showToast("Sugerencia aprobada — invitación enviada");
+      showToast("Suggestion approved — invitation sent");
       onSaved(data.event);
     } catch (e) {
       showToast(e.message, "danger");
@@ -912,7 +782,7 @@ export const EventModal = ({
       setEventData(data.event);
       await reloadSuggestions();
       const n = (data.invitations || []).length;
-      showToast(`${n} sugerencia(s) aprobada(s)`);
+      showToast(`${n} suggestion(s) approved`);
       onSaved(data.event);
     } catch (e) {
       showToast(e.message, "danger");
@@ -945,9 +815,9 @@ export const EventModal = ({
       const data = await apiRespond(eventId, response);
       setEventData(data.event);
       showToast(
-        response === "going" ? "Voy" :
-        response === "maybe" ? "Tal vez" :
-        "No voy"
+        response === "going" ? "Going" :
+        response === "maybe" ? "Maybe" :
+        "Not going"
       );
       onSaved(data.event);
     } catch (e) {
@@ -960,11 +830,11 @@ export const EventModal = ({
   // Leave event entirely (non-creator only)
   const handleLeave = async () => {
     if (leaving || !eventId) return;
-    if (!window.confirm("¿Salir del evento? Perderás el acceso al chat.")) return;
+    if (!window.confirm("Leave this event? You will lose access to the chat.")) return;
     setLeaving(true);
     try {
       await apiLeaveEvent(eventId);
-      showToast("Saliste del evento");
+      showToast("You left the event");
       onSaved({ id: eventId, removed: true });
       onHide();
     } catch (e) {
@@ -1027,17 +897,12 @@ export const EventModal = ({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    if (file.size > 1.5 * 1024 * 1024) {
+      showToast("Image too large (max 1.5 MB)", "danger");
+      return;
+    }
     try {
-      // Chat photos use the "chat" preset (maxSide 1280) — smaller than
-      // event covers because they don't need the same detail.
-      let dataUrl;
-      try {
-        const { compressImage } = await import("../utils/uploadImage");
-        dataUrl = await compressImage(file, "chat");
-      } catch (compressErr) {
-        console.error("Compression failed, sending raw:", compressErr);
-        dataUrl = await fileToBase64(file);
-      }
+      const dataUrl = await fileToBase64(file);
       await apiPostMessage(eventId, {
         media_url: dataUrl,
         media_type: "image",
@@ -1220,9 +1085,9 @@ export const EventModal = ({
          (eventData.my_status === "pending" || eventData.my_status === "accepted") && (
           <div className="sq-response-bar">
             {[
-              { v: "going",     label: "Voy",     icon: <FiCheckCircle /> },
-              { v: "maybe",     label: "Tal vez", icon: <FiHelpCircle /> },
-              { v: "not_going", label: "No voy",  icon: <FiXCircle /> },
+              { v: "going",     label: "Going",     icon: <FiCheckCircle /> },
+              { v: "maybe",     label: "Maybe",     icon: <FiHelpCircle /> },
+              { v: "not_going", label: "Not going",  icon: <FiXCircle /> },
             ].map((opt) => (
               <button
                 key={opt.v}
@@ -1299,85 +1164,19 @@ export const EventModal = ({
                   />
                 </Col>
 
-                <Col xs={12} style={{ position: "relative" }}>
+                <Col xs={12}>
                   <Form.Label><FiMapPin className="me-1" /> Location</Form.Label>
                   <Form.Control
                     name="location"
                     value={form.location}
-                    onChange={handleLocationChange}
-                    onBlur={() => {
-                      // Delay closing so click on a suggestion can fire first.
-                      setTimeout(() => setShowAddressDropdown(false), 150);
-                    }}
-                    placeholder="Empieza a escribir la dirección..."
-                    autoComplete="off"
+                    onChange={handleField}
+                    placeholder="Address"
                     disabled={isEditMode && !isCreator}
                   />
-                  {/* Autocomplete dropdown */}
-                  {showAddressDropdown && addressSuggestions.length > 0 && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        zIndex: 1100,
-                        left: 12, right: 12,
-                        marginTop: 2,
-                        background: "#0f111a",
-                        border: "1px solid #2a2f42",
-                        borderRadius: 8,
-                        maxHeight: 240,
-                        overflowY: "auto",
-                        boxShadow: "0 8px 20px rgba(0,0,0,0.5)",
-                      }}
-                    >
-                      {addressSuggestions.map((sug, i) => (
-                        <div
-                          key={`${sug.lat},${sug.lng},${i}`}
-                          onMouseDown={(e) => {
-                            // onMouseDown fires before onBlur — so we can
-                            // commit the pick before the input closes us.
-                            e.preventDefault();
-                            handlePickAddress(sug);
-                          }}
-                          style={{
-                            padding: "8px 10px",
-                            cursor: "pointer",
-                            color: "#e9ecef",
-                            fontSize: "0.85rem",
-                            borderBottom: i < addressSuggestions.length - 1 ? "1px solid #2a2f42" : "none",
-                            transition: "background 0.12s",
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = "#1e2230"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                        >
-                          <FiMapPin className="me-2" style={{ color: "#6366f1" }} />
-                          {sug.label}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {addressSearching && (
-                    <small className="text-secondary d-block mt-1">Buscando direcciones...</small>
-                  )}
-                  {form.latitude != null && form.longitude != null && !addressSearching && (
-                    <small className="text-secondary d-block mt-1">
+                  {form.latitude != null && form.longitude != null && (
+                    <small className="text-secondary">
                       {Number(form.latitude).toFixed(5)}, {Number(form.longitude).toFixed(5)}
                     </small>
-                  )}
-                  {/* "Ver en el mapa" — only meaningful for existing
-                      geolocated events. Closes the modal and navigates
-                      to /map?event=<id> so Mapview flies to the marker. */}
-                  {isEditMode && form.latitude != null && form.longitude != null && (
-                    <Button
-                      variant="outline-info"
-                      size="sm"
-                      className="mt-2"
-                      onClick={() => {
-                        onHide();
-                        navigate(`/map?event=${eventId}`);
-                      }}
-                    >
-                      <FiMapPin className="me-1" /> Ver en el mapa
-                    </Button>
                   )}
                 </Col>
 
@@ -1392,6 +1191,37 @@ export const EventModal = ({
                     placeholder="Notes for participants..."
                     disabled={isEditMode && !isCreator}
                   />
+                </Col>
+
+                {/* ─────────── VISIBILITY (public / private) ─────────── */}
+                <Col xs={12}>
+                  <Form.Label>Visibility</Form.Label>
+                  <div className="visibility-toggle">
+                    <button
+                      type="button"
+                      className={`vis-option ${!form.is_public ? "active" : ""}`}
+                      onClick={() => setForm((f) => ({ ...f, is_public: false }))}
+                      disabled={isEditMode && !isCreator}
+                    >
+                      <FiLock className="me-2" />
+                      <span>
+                        <strong>Private</strong>
+                        <small>Only invited friends can see it</small>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`vis-option ${form.is_public ? "active" : ""}`}
+                      onClick={() => setForm((f) => ({ ...f, is_public: true }))}
+                      disabled={isEditMode && !isCreator}
+                    >
+                      <FiGlobe className="me-2" />
+                      <span>
+                        <strong>Public</strong>
+                        <small>All your friends are invited &amp; notified</small>
+                      </span>
+                    </button>
+                  </div>
                 </Col>
               </Row>
             </Tab>
@@ -1417,9 +1247,9 @@ export const EventModal = ({
                   <ListGroup className="mb-3">
                     {participants.map((p) => {
                       const rsvp = p.rsvp || "none";
-                      const rsvpLabel = rsvp === "going" ? "Voy"
-                                      : rsvp === "maybe" ? "Tal vez"
-                                      : rsvp === "not_going" ? "No voy"
+                      const rsvpLabel = rsvp === "going" ? "Going"
+                                      : rsvp === "maybe" ? "Maybe"
+                                      : rsvp === "not_going" ? "Not going"
                                       : "—";
                       return (
                         <ListGroup.Item
@@ -1447,7 +1277,7 @@ export const EventModal = ({
                               variant="outline-danger"
                               size="sm"
                               onClick={() => handleRemoveMember(p.id)}
-                              title="Sacar del evento"
+                              title="Remove from event"
                             >
                               <FiTrash2 />
                             </Button>
@@ -1466,7 +1296,7 @@ export const EventModal = ({
                         onClick={handleLeave}
                         disabled={leaving}
                       >
-                        {leaving ? <Spinner size="sm" animation="border" /> : <><FiLogOut className="me-1" /> Leave the event</>}
+                        {leaving ? <Spinner size="sm" animation="border" /> : <><FiLogOut className="me-1" /> Leave event</>}
                       </Button>
                     </div>
                   )}
@@ -1475,7 +1305,7 @@ export const EventModal = ({
                   {isCreator && (
                     <>
                       <div className="small text-secondary text-uppercase fw-semibold mb-2 d-flex justify-content-between align-items-center">
-                        <span>Inite friends</span>
+                        <span>Invite friends</span>
                         {selectedToInvite.size > 0 && (
                           <Button
                             size="sm"
@@ -1487,7 +1317,7 @@ export const EventModal = ({
                         )}
                       </div>
                       {friendsAvailable.length === 0 ? (
-                        <div className="small text-secondary">There are no friends left to invite.</div>
+                        <div className="small text-secondary">No more friends to invite.</div>
                       ) : (
                         <div>
                           {friendsAvailable.map((u) => {
@@ -1541,22 +1371,22 @@ export const EventModal = ({
                   {!isCreator && eventData?.my_status === "accepted" && (
                     <>
                       <div className="small text-secondary text-uppercase fw-semibold mb-2 mt-4 d-flex justify-content-between align-items-center">
-                        <span className="fs-5 text-primary">Suggest a friend</span>
+                        <span>Suggest inviting a friend</span>
                         {selectedToSuggest.size > 0 && (
                           <Button
                             size="sm"
                             variant="warning"
                             onClick={handleSuggestBatch}
                           >
-                            <FiUserPlus className="me-1" /> Sugerir ({selectedToSuggest.size})
+                            <FiUserPlus className="me-1" /> Suggest ({selectedToSuggest.size})
                           </Button>
                         )}
                       </div>
                       <div className="small text-secondary mb-2">
-                        The creator will receive a notification and decide whether to send the invitation.
+                        The creator will be notified and will decide whether to send the invitation.
                       </div>
                       {friendsAvailable.length === 0 ? (
-                        <div className="small text-secondary">You don't have any friends who aren't already in the event.</div>
+                        <div className="small text-secondary">You have no friends who aren't already in the event.</div>
                       ) : (
                         <div>
                           {friendsAvailable.map((u) => {
@@ -1601,7 +1431,7 @@ export const EventModal = ({
               ) : (
                 <>
                   <div className="small text-secondary text-uppercase fw-semibold mb-2">
-                    Invite friends (You can add more later.)
+                    Invite friends (you can add more later)
                   </div>
                   {friends.length === 0 ? (
                     <div className="small text-secondary">
@@ -1650,7 +1480,7 @@ export const EventModal = ({
                 eventKey="suggestions"
                 title={
                   <span>
-                    <FiUserCheck className="me-1" /> Suggestions{" "}
+                    <FiUserCheck className="me-1" /> Sugerencias{" "}
                     {suggestions.length > 0 && (
                       <Badge bg="warning" text="dark">{suggestions.length}</Badge>
                     )}
@@ -1663,13 +1493,13 @@ export const EventModal = ({
                   </div>
                 ) : suggestions.length === 0 ? (
                   <div className="text-center py-4 text-secondary small">
-                    There are no pending suggestions.
+                    No pending suggestions.
                   </div>
                 ) : (
                   <>
                     <div className="d-flex justify-content-between align-items-center mb-3">
                       <span className="small text-secondary">
-                        {suggestions.length} Suggestions{suggestions.length === 1 ? "" : "s"} Pending{suggestions.length === 1 ? "" : "s"}
+                        {suggestions.length} pending suggestion{suggestions.length === 1 ? "" : "s"}
                       </span>
                       <div className="d-flex gap-2">
                         <Button
@@ -1678,7 +1508,7 @@ export const EventModal = ({
                           onClick={handleApproveAllSuggestions}
                           disabled={suggestionsBusy}
                         >
-                          <FiCheck className="me-1" /> Aprobar todas
+                          <FiCheck className="me-1" /> Approve all
                         </Button>
                         <Button
                           size="sm"
@@ -1686,7 +1516,7 @@ export const EventModal = ({
                           onClick={handleRefuseAllSuggestions}
                           disabled={suggestionsBusy}
                         >
-                          <FiX className="me-1" /> Rechazar todas
+                          <FiX className="me-1" /> Refuse all
                         </Button>
                       </div>
                     </div>
@@ -1718,7 +1548,7 @@ export const EventModal = ({
                               variant="outline-success"
                               onClick={() => handleApproveSuggestion(s.id)}
                               disabled={suggestionsBusy}
-                              title="Aprobar e invitar"
+                              title="Approve and invite"
                             >
                               <FiCheck />
                             </Button>
@@ -1727,7 +1557,7 @@ export const EventModal = ({
                               variant="outline-danger"
                               onClick={() => handleRefuseSuggestion(s.id)}
                               disabled={suggestionsBusy}
-                              title="Rechazar"
+                              title="Refuse"
                             >
                               <FiX />
                             </Button>
@@ -1777,14 +1607,14 @@ export const EventModal = ({
                                 className="chat-edit-save"
                                 onClick={saveEdit}
                                 disabled={!editText.trim()}
-                                title="Guardar"
+                                title="Save"
                               >
                                 <FiCheck />
                               </Button>
                               <Button
                                 className="chat-edit-cancel"
                                 onClick={cancelEdit}
-                                title="Cancelar"
+                                title="Cancel"
                               >
                                 <FiX />
                               </Button>
@@ -1818,7 +1648,7 @@ export const EventModal = ({
                               <Button
                                 className="chat-edit-btn"
                                 onClick={() => beginEdit(m)}
-                                title="Editar (15 min)"
+                                title="Edit (15 min)"
                               >
                                 <FiEdit2 />
                               </Button>
@@ -1834,7 +1664,7 @@ export const EventModal = ({
                   <Button
                     className="chat-media-btn"
                     onClick={handlePickChatImage}
-                    title="Enviar foto"
+                    title="Send photo"
                     disabled={isRecording || !!editingMsgId}
                   >
                     <FiImage />
@@ -1842,7 +1672,7 @@ export const EventModal = ({
                   <Button
                     className={`chat-media-btn ${isRecording ? "recording" : ""}`}
                     onClick={toggleRecording}
-                    title={isRecording ? "Detener y enviar audio" : "Grabar audio"}
+                    title={isRecording ? "Stop and send audio" : "Record audio"}
                     disabled={!!editingMsgId}
                   >
                     {isRecording ? <FiSquare /> : <FiMic />}
@@ -1850,9 +1680,9 @@ export const EventModal = ({
                   <Form.Control
                     placeholder={
                       isRecording
-                        ? "Grabando audio..."
+                        ? "Recording audio..."
                         : editingMsgId
-                        ? "Editando un mensaje..."
+                        ? "Editing a message..."
                         : "Type a message..."
                     }
                     value={chatText}
@@ -1897,6 +1727,18 @@ export const EventModal = ({
           </Button>
         )}
         <Button variant="outline-light" onClick={onHide}>Close</Button>
+        {isEditMode && eventData?.chat_room_id && (
+          <Button
+            variant="outline-info"
+            onClick={() => {
+              const rid = eventData.chat_room_id;
+              onHide();
+              navigate(`/messages/${rid}`);
+            }}
+          >
+            <FiMaximize2 className="me-1" /> Expand
+          </Button>
+        )}
         {(!isEditMode || isCreator) && (
           <Button onClick={handleSave} disabled={saving || deleting}>
             {saving

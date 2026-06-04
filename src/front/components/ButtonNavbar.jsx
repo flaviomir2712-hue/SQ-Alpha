@@ -111,6 +111,8 @@ const PROFILE_CSS = `
   border: 3px solid #6366f1;
   object-fit: cover;
   background: #0f111a;
+  display: block;
+  margin: 0 auto;
 }
 .profile-avatar-fallback {
   display: flex;
@@ -120,9 +122,18 @@ const PROFILE_CSS = `
   font-weight: 700;
   color: #fff;
   background: linear-gradient(135deg, #6366f1, #ec4899);
+  margin: 0 auto;
 }
 .activity-bar .progress { background: #0f111a; height: 14px; border-radius: 10px; }
 .activity-bar .progress-bar { background: linear-gradient(90deg, #6366f1, #ec4899); }
+
+/* @username title shown above the email in the profile header */
+.profile-username {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.01em;
+}
 
 /* Photo picker (replaces the old URL input) */
 .profile-photo-picker {
@@ -158,8 +169,8 @@ const initials = (user) => {
 };
 
 const levelColor = (level) => {
-  if (level === "Très actif") return "success";
-  if (level === "Actif") return "info";
+  if (level === "Very active") return "success";
+  if (level === "Active") return "info";
   return "secondary";
 };
 
@@ -231,20 +242,15 @@ export const BottomNavbar = () => {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-uploading the same file later
     if (!file) return;
-    // No hard size cap — compressImage reduces a 25 MB iPhone shot to
-    // ~250 KB. Browser FileReader can handle the original easily.
+    if (file.size > 1.5 * 1024 * 1024) {
+      setProfileError("Image too large (max 1.5 MB)");
+      return;
+    }
     try {
-      const { compressImage } = await import("../utils/uploadImage");
-      const dataUrl = await compressImage(file, "profile");
+      const dataUrl = await fileToBase64(file);
       setProfile((p) => ({ ...p, profile_picture_url: dataUrl }));
-    } catch (err) {
-      console.error("Image compression failed, falling back to raw base64:", err);
-      try {
-        const dataUrl = await fileToBase64(file);
-        setProfile((p) => ({ ...p, profile_picture_url: dataUrl }));
-      } catch {
-        setProfileError("Failed to read file");
-      }
+    } catch {
+      setProfileError("Failed to read file");
     }
   };
 
@@ -332,9 +338,9 @@ export const BottomNavbar = () => {
           <span>home</span>
         </Link>
 
-        <Link to="/calendar" className="bottom-item text-decoration-none text-reset">
-          <FiCalendar />
-          <span>calendar</span>
+        <Link to="/messages" className="bottom-item text-decoration-none text-reset">
+          <FiMessageSquare />
+          <span>chatroom</span>
         </Link>
 
         <button
@@ -346,7 +352,7 @@ export const BottomNavbar = () => {
         </button>
 
         <Link to="/events" className="bottom-item text-decoration-none text-reset">
-          <FiMessageSquare />
+          <FiCalendar />
           <span>events</span>
         </Link>
 
@@ -390,15 +396,12 @@ export const BottomNavbar = () => {
 
           {!profileLoading && profile && (
             <>
-              {/* AVATAR + UPLOAD CONTROLS — single centred block.
-                  Previously there was a read-only avatar at the top AND
-                  a separate picker further down (easy to miss). We merged
-                  them: the visible avatar IS the live preview. */}
+              {/* AVATAR (read-only display, same as before) */}
               <div className="text-center mb-4">
                 {profile.profile_picture_url ? (
                   <img
                     src={profile.profile_picture_url}
-                    alt="profile preview"
+                    alt="profile"
                     className="profile-avatar"
                     onError={(e) => { e.target.style.display = "none"; }}
                   />
@@ -407,42 +410,12 @@ export const BottomNavbar = () => {
                     {initials(profile)}
                   </div>
                 )}
-
-                <div className="d-flex justify-content-center gap-2 mt-3">
-                  <Button
-                    variant="outline-light"
-                    size="sm"
-                    onClick={handlePickPhoto}
-                  >
-                    <FiImage className="me-1" />
-                    {profile.profile_picture_url ? "Cambiar foto" : "Subir foto"}
-                  </Button>
-                  {profile.profile_picture_url && (
-                    <Button
-                      variant="outline-danger"
-                      size="sm"
-                      onClick={removePhoto}
-                    >
-                      <FiX className="me-1" /> Quitar
-                    </Button>
-                  )}
-                </div>
-                <small className="text-secondary d-block mt-1">
-                  Desde tu dispositivo · compresión automática
-                </small>
-
-                <input
-                  ref={photoInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: "none" }}
-                  onChange={handlePhotoChange}
-                />
-
-                <div className="text-secondary small mt-3">
-                  @{profile.username || "—"}
-                </div>
-                <div className="text-secondary small">
+                {profile.username && (
+                  <div className="profile-username mt-2">
+                    @{profile.username}
+                  </div>
+                )}
+                <div className="text-secondary small mt-1">
                   {profile.email}
                 </div>
               </div>
@@ -552,6 +525,53 @@ export const BottomNavbar = () => {
                     />
                   </Col>
                 </Row>
+
+                {/* ---------- PHOTO (file upload, replaces URL input) ---------- */}
+                <Form.Label>Profile picture</Form.Label>
+                <div className="profile-photo-picker mb-3">
+                  {profile.profile_picture_url ? (
+                    <img
+                      src={profile.profile_picture_url}
+                      alt="profile preview"
+                      className="profile-avatar"
+                    />
+                  ) : (
+                    <div className="profile-photo-empty">
+                      <FiUser size={32} />
+                    </div>
+                  )}
+
+                  <div className="d-flex gap-2">
+                    <Button
+                      variant="outline-light"
+                      size="sm"
+                      onClick={handlePickPhoto}
+                    >
+                      <FiImage className="me-1" />
+                      {profile.profile_picture_url ? "Change photo" : "Upload photo"}
+                    </Button>
+                    {profile.profile_picture_url && (
+                      <Button
+                        variant="outline-danger"
+                        size="sm"
+                        onClick={removePhoto}
+                      >
+                        <FiX className="me-1" /> Remove
+                      </Button>
+                    )}
+                  </div>
+                  <small className="text-secondary">
+                    From your device · max 1.5 MB
+                  </small>
+
+                  <input
+                    ref={photoInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={handlePhotoChange}
+                  />
+                </div>
 
                 <Form.Label>Bio</Form.Label>
                 <Form.Control
