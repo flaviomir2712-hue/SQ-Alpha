@@ -37,18 +37,18 @@ import {
 } from "react-icons/fi";
 
 // Options for the map time filter (number of days). null = no filter.
-const MAP_FILTER_OPTIONS = [
-    { value: null, label: "Todos" },
-    { value: 1,    label: "Hoy y mañana" },
-    { value: 3,    label: "Próximos 3 días" },
-    { value: 7,    label: "Próxima semana" },
-    { value: 14,   label: "Próximas 2 semanas" },
-    { value: 30,   label: "Próximo mes" },
-    { value: 90,   label: "Próximos 3 meses" },
-];
+// const MAP_FILTER_OPTIONS = [
+//     { value: null, label: "Todos" },
+//     { value: 1,    label: "Hoy y mañana" },
+//     { value: 3,    label: "Próximos 3 días" },
+//     { value: 7,    label: "Próxima semana" },
+//     { value: 14,   label: "Próximas 2 semanas" },
+//     { value: 30,   label: "Próximo mes" },
+//     { value: 90,   label: "Próximos 3 meses" },
+// ];
 
-const labelForFilter = (val) =>
-    MAP_FILTER_OPTIONS.find((o) => o.value === val)?.label || "Todos";
+// const labelForFilter = (val) =>
+//     MAP_FILTER_OPTIONS.find((o) => o.value === val)?.label || "Todos";
 
 // =====================================================
 // LOCAL HELPERS (inlined so the navbar is self-contained)
@@ -362,44 +362,44 @@ const NAVBAR_CSS = `
 }
 
 /* Hamburger dropdown */
-/* Map-filter toggle — smaller than the rest, sits next to the brand */
-.sq-filter-toggle.dropdown-toggle::after { display: none; }
-.sq-filter-toggle {
-  background: rgba(255,255,255,0.06) !important;
-  border: 1px solid #262a36 !important;
-  border-radius: 999px !important;
-  padding: 0.25rem 0.55rem !important;
-  display: inline-flex !important;
-  align-items: center;
-  gap: 0.25rem;
-  min-height: 28px;
-}
-.sq-filter-toggle:hover { background: rgba(255,255,255,0.12) !important; border-color: #6366f1 !important; }
-.sq-filter-toggle:focus { box-shadow: none !important; }
+ /* Map-filter toggle — smaller than the rest, sits next to the brand */
+ .sq-filter-toggle.dropdown-toggle::after { display: none; }
+ .sq-filter-toggle {
+   background: rgba(255,255,255,0.06) !important;
+   border: 1px solid #262a36 !important;
+   border-radius: 999px !important;
+   padding: 0.25rem 0.55rem !important;
+   display: inline-flex !important;
+   align-items: center;
+   gap: 0.25rem;
+   min-height: 28px;
+ }
+ .sq-filter-toggle:hover { background: rgba(255,255,255,0.12) !important; border-color: #6366f1 !important; }
+ .sq-filter-toggle:focus { box-shadow: none !important; }
 
-.sq-menu-toggle.dropdown-toggle::after { display: none; }
-.sq-menu-toggle {
-  background: transparent !important; border: none !important;
-  padding: 0.25rem 0.5rem;
-}
-.sq-menu-toggle:focus { box-shadow: none !important; }
-.sq-menu-dropdown {
-  background: #161922; border: 1px solid #262a36;
-  color: #e9ecef; min-width: 220px;
-}
-.sq-menu-dropdown .dropdown-item { color: #e9ecef; }
-.sq-menu-dropdown .dropdown-item:hover,
-.sq-menu-dropdown .dropdown-item:focus { background: #1e2230; color: #fff; }
-.sq-menu-dropdown .dropdown-header { color: #adb5bd; }
-.sq-menu-dropdown .dropdown-divider { border-color: #262a36; }
-.sq-menu-logout { color: #ff6b6b !important; }
-.sq-menu-logout:hover { background: #2a1212 !important; color: #ff8a8a !important; }
+ .sq-menu-toggle.dropdown-toggle::after { display: none; }
+ .sq-menu-toggle {
+   background: transparent !important; border: none !important;
+   padding: 0.25rem 0.5rem;
+ }
+ .sq-menu-toggle:focus { box-shadow: none !important; }
+ .sq-menu-dropdown {
+   background: #161922; border: 1px solid #262a36;
+   color: #e9ecef; min-width: 220px;
+ }
+ .sq-menu-dropdown .dropdown-item { color: #e9ecef; }
+ .sq-menu-dropdown .dropdown-item:hover,
+ .sq-menu-dropdown .dropdown-item:focus { background: #1e2230; color: #fff; }
+ .sq-menu-dropdown .dropdown-header { color: #adb5bd; }
+ .sq-menu-dropdown .dropdown-divider { border-color: #262a36; }
+ .sq-menu-logout { color: #ff6b6b !important; }
+ .sq-menu-logout:hover { background: #2a1212 !important; color: #ff8a8a !important; }
 
-@media (max-width: 575.98px) {
-  .sq-navbar .navbar-brand { font-size: 1.5rem; }
-  .sq-hide-xs { display: none !important; }
-}
-`;
+ @media (max-width: 575.98px) {
+   .sq-navbar .navbar-brand { font-size: 1.5rem; }
+   .sq-hide-xs { display: none !important; }
+ }
+ `;
 
 // =====================================================
 // HELPERS
@@ -758,7 +758,7 @@ export const Navbar = () => {
 
                         {/* MAP TIME FILTER — small, sits right next to the logo.
                             Only meaningful when logged in. */}
-                        {isLogged && (
+                        {/* {isLogged && (
                             <Dropdown align="start">
                                 <Dropdown.Toggle
                                     as={Button}
@@ -797,7 +797,7 @@ export const Navbar = () => {
                                     })}
                                 </Dropdown.Menu>
                             </Dropdown>
-                        )}
+                        )} */}
                     </div>
 
                     <Nav className="d-flex flex-row align-items-center gap-2 gap-md-3">

@@ -39,27 +39,7 @@ const escapeHTML = (str = "") =>
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
-/**
- * Build a Leaflet divIcon that renders:
- *
- *   ┌──────────────────────────┐   ← .avatar-marker-tip (hover only)
- *   │  Evento · mañana · 4:50  │
- *   └────────────┬─────────────┘
- *                ↓
- *        ╭──────────╮            ← .avatar-marker  (circle, single white border)
- *        │  photo / │
- *        │   logo   │
- *        ╰──────────╯
- *           ╭──────╮             ← .avatar-marker-going  (gradient pill, below)
- *           │ 3 voy│
- *           ╰──────╯
- *
- * Design decisions:
- *  - Single 2px white border (matches "variante actual").
- *  - Going-pill sits BELOW the circle so it never overlaps the tooltip.
- *  - Tooltip is CSS :hover only — never fires on touch (avoids iOS sticky-hover bug).
- *  - Logo fallback gets `has-logo` class → object-fit:contain + dark bg padding.
- */
+
 export const createMarkerAvatar = (
   imageUrl,
   size = 56,
