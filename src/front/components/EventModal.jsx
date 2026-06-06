@@ -166,6 +166,15 @@ const EVENT_CSS = `
   background: transparent;
   border-bottom: 2px solid #6366f1;
 }
+
+/* Tab content min-height — keeps the modal the same height no matter
+   which tab is active. The Details tab is the tallest, so we pin every
+   tab pane to that floor and let the modal stop "jumping" between
+   Details / Participants / Suggestions / Chat. */
+.event-modal .tab-content {
+  min-height: 520px;
+}
+
 .event-photo-preview {
   width: 100%; max-height: 220px; object-fit: cover;
   border-radius: 12px; border: 1px solid #262a36;
@@ -333,14 +342,29 @@ body.modal-open .bottom-navbar { display: none; }
   font-size: 0.72rem; color: #6c757d; margin-top: 2px;
 }
 
-/* Friend checkbox list (multi-invite / multi-suggest) */
+/* Friend checkbox list (multi-invite / multi-suggest)
+   Cursor is 'default' because the row itself is no longer the click
+   target — only the inline Form.Check toggles selection. The hover
+   background stays as a passive visual grouping cue. */
 .sq-friend-checkbox-row {
   display: flex; align-items: center; gap: 0.6rem;
   padding: 0.4rem 0.6rem; border-radius: 8px;
-  cursor: pointer; transition: background 0.12s;
+  cursor: default; transition: background 0.12s;
 }
 .sq-friend-checkbox-row:hover { background: #1e2230; }
 .sq-friend-checkbox-row.selected { background: rgba(99,102,241,0.12); }
+.sq-friend-checkbox-row .form-check { cursor: pointer; margin-bottom: 0; }
+.sq-friend-checkbox-row .form-check-input { cursor: pointer; }
+
+/* Hint shown next to the section title when there are pending selections
+   that will be sent via "Save changes". */
+.sq-selection-hint {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6366f1;
+  text-transform: none;
+  letter-spacing: 0;
+}
 
 /* Visibility (public / private) toggle */
 .visibility-toggle { display: flex; gap: 8px; }
@@ -521,6 +545,31 @@ export const EventModal = ({
 
   const fileInputRef = useRef(null);
 
+  // --- batch selections (sent via the unified "Save changes" button) ---
+  // pendingInviteIds      → invitations the creator just dispatched in
+  //                         this session; rendered as a "Pending" badge so
+  //                         the row no longer offers a checkbox.
+  // pendingSuggestionIds  → same idea but for the non-creator's suggestion
+  //                         flow. Local-only — on modal reopen the backend
+  //                         deduplicates (skipped[]) so a re-suggest is a
+  //                         no-op.
+  const [pendingInviteIds, setPendingInviteIds]         = useState([]);
+  const [pendingSuggestionIds, setPendingSuggestionIds] = useState([]);
+
+  // Multi-select state for the "Invite" list (creator) and the "Suggest"
+  // list (non-creator participant). Each is a Set of user ids.
+  const [selectedToInvite, setSelectedToInvite]   = useState(() => new Set());
+  const [selectedToSuggest, setSelectedToSuggest] = useState(() => new Set());
+
+  // Suggestions tab state (creator only)
+  const [suggestions, setSuggestions] = useState([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
+
+  // Response (going/maybe/not_going) saving state
+  const [respondBusy, setRespondBusy] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+
   // =====================================================
   // LOAD on open
   // =====================================================
@@ -532,6 +581,10 @@ export const EventModal = ({
     setToast(null);
     setInvitedIds([]);
     setMessages([]);
+    setSelectedToInvite(new Set());
+    setSelectedToSuggest(new Set());
+    setPendingInviteIds([]);
+    setPendingSuggestionIds([]);
     cancelEdit();
     stopRecording(true);
 
@@ -727,29 +780,65 @@ export const EventModal = ({
     );
   };
 
+  // Toggle a friend in the creator's "Invite" multi-select.
+  const toggleSelectedInvite = (id) => {
+    setSelectedToInvite((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Toggle a friend in the non-creator's "Suggest" multi-select.
+  const toggleSelectedSuggest = (id) => {
+    setSelectedToSuggest((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // ---------------------------------------------------------------
+  // UNIFIED SAVE
+  // ---------------------------------------------------------------
+  // "Save changes" is the ONLY action that mutates the event from the
+  // modal body. It handles three distinct flows in a single click:
+  //
+  //   1. Create mode (no eventId): POST /api/events with the form +
+  //      invited friend ids — same payload as before.
+  //   2. Edit mode + creator: PUT /api/events/:id with the form, then,
+  //      if any friends are selected in the "Invite" list, POST
+  //      /api/events/:id/invite to send them as a single batch.
+  //   3. Edit mode + non-creator participant: POST
+  //      /api/events/:id/suggest-invite for the selected friends.
+  //
+  // We deliberately avoid a dedicated "Invite" or "Suggest" button —
+  // the unified Save matches the user's mental model ("changes happen
+  // when I click Save") and removes UX clutter.
   const handleSave = async () => {
-    if (!form.date || !form.time || !form.location) {
+    // Field validation only matters for the creator path (which is the
+    // only one that mutates event details). A non-creator with selected
+    // suggestions skips this check entirely.
+    if (isCreator && (!form.date || !form.time || !form.location)) {
       showToast("date, time and location are required", "danger");
       return;
     }
+
+    // Nothing to send for a non-creator without any pending suggestion —
+    // shouldn't reach here (the button is hidden) but guard anyway.
+    if (!isCreator && selectedToSuggest.size === 0) {
+      showToast("Select at least one friend to suggest", "danger");
+      return;
+    }
+
     setSaving(true);
     setError(null);
+
     try {
-      if (isEditMode) {
-        const data = await apiUpdateEvent(eventId, {
-          title:     form.title,
-          date:      form.date,
-          time:      form.time,
-          location:  form.location,
-          details:   form.details,
-          is_public: form.is_public,
-          latitude:  form.latitude,
-          longitude: form.longitude,
-        });
-        setEventData(data.event);
-        showToast("Event updated");
-        onSaved(data.event);
-      } else {
+      // ─── CREATE MODE ───
+      if (!isEditMode) {
         const data = await apiCreateEvent({
           title:     form.title,
           date:      form.date,
@@ -765,66 +854,72 @@ export const EventModal = ({
         showToast("Event created");
         onSaved(data.event);
         onHide();
+        return;
       }
+
+      // ─── EDIT MODE / CREATOR ───
+      if (isCreator) {
+        // 1. Save the event details first.
+        const data = await apiUpdateEvent(eventId, {
+          title:     form.title,
+          date:      form.date,
+          time:      form.time,
+          location:  form.location,
+          details:   form.details,
+          is_public: form.is_public,
+          latitude:  form.latitude,
+          longitude: form.longitude,
+        });
+        setEventData(data.event);
+        onSaved(data.event);
+
+        // 2. If the creator selected friends in the "Invite" list,
+        //    send them as one batch. A failure here doesn't roll back
+        //    the saved event — surface the error via toast.
+        const inviteIds = Array.from(selectedToInvite);
+        if (inviteIds.length > 0) {
+          try {
+            const inv = await apiInviteBatch(eventId, inviteIds);
+            setEventData(inv.event);
+            setPendingInviteIds((prev) => [...prev, ...inviteIds]);
+            setSelectedToInvite(new Set());
+            const sent    = (inv.invitations || []).length;
+            const skipped = (inv.skipped || []).length;
+            showToast(
+              skipped > 0
+                ? `Saved. ${sent} invitation(s) sent, ${skipped} skipped`
+                : sent > 0
+                  ? `Saved. ${sent} invitation(s) sent`
+                  : "Event updated"
+            );
+            onSaved(inv.event);
+          } catch (inviteErr) {
+            showToast(`Saved, but invite failed: ${inviteErr.message}`, "danger");
+          }
+        } else {
+          showToast("Event updated");
+        }
+        return;
+      }
+
+      // ─── EDIT MODE / NON-CREATOR PARTICIPANT ───
+      // Only the suggestion batch is sent — non-creators can't edit
+      // event details, and "Save changes" is the single entry point.
+      const suggestIds = Array.from(selectedToSuggest);
+      const sug = await apiSuggestInvite(eventId, suggestIds);
+      setPendingSuggestionIds((prev) => [...prev, ...suggestIds]);
+      setSelectedToSuggest(new Set());
+      const sent    = (sug.suggestions || []).length;
+      const skipped = (sug.skipped || []).length;
+      showToast(
+        skipped > 0
+          ? `${sent} suggestion(s) sent, ${skipped} skipped`
+          : `${sent} suggestion(s) sent`
+      );
     } catch (e) {
       setError(e.message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const [pendingInviteIds, setPendingInviteIds] = useState([]);
-
-  // Multi-select state for the "Invite" list (creator) and the "Suggest"
-  // list (non-creator participant). Each is a Set of user ids.
-  const [selectedToInvite, setSelectedToInvite] = useState(() => new Set());
-  const [selectedToSuggest, setSelectedToSuggest] = useState(() => new Set());
-
-  // Suggestions tab state (creator only)
-  const [suggestions, setSuggestions] = useState([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
-  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
-
-  // Response (going/maybe/not_going) saving state
-  const [respondBusy, setRespondBusy] = useState(false);
-  const [leaving, setLeaving] = useState(false);
-
-  // Batch invite — sends one request with the full list.
-  const handleInviteBatch = async () => {
-    const ids = Array.from(selectedToInvite);
-    if (!ids.length) return;
-    setPendingInviteIds((prev) => [...prev, ...ids]);
-    try {
-      const data = await apiInviteBatch(eventId, ids);
-      setEventData(data.event);
-      setSelectedToInvite(new Set());
-      const sent = (data.invitations || []).length;
-      const skipped = (data.skipped || []).length;
-      showToast(
-        skipped > 0 ? `${sent} invitation(s) sent, ${skipped} skipped` : `${sent} invitation(s) sent`
-      );
-      onSaved(data.event);
-    } catch (e) {
-      setPendingInviteIds((prev) => prev.filter((x) => !ids.includes(x)));
-      showToast(e.message, "danger");
-    }
-  };
-
-  // Batch suggest (non-creator participant) — generates one notification
-  // per suggestion to the creator.
-  const handleSuggestBatch = async () => {
-    const ids = Array.from(selectedToSuggest);
-    if (!ids.length) return;
-    try {
-      const data = await apiSuggestInvite(eventId, ids);
-      setSelectedToSuggest(new Set());
-      const sent = (data.suggestions || []).length;
-      const skipped = (data.skipped || []).length;
-      showToast(
-        skipped > 0 ? `${sent} suggestion(s) sent, ${skipped} skipped` : `${sent} suggestion(s) sent`
-      );
-    } catch (e) {
-      showToast(e.message, "danger");
     }
   };
 
@@ -1120,6 +1215,15 @@ export const EventModal = ({
   const title = isEditMode
     ? (eventData?.title || "Event")
     : "Create event";
+
+  // Whether the footer's "Save changes" / "Create" button should render
+  // for the current user. Non-creators only see it once they've picked
+  // at least one friend in the Suggest list — otherwise there is
+  // literally nothing for them to save.
+  const showSaveButton =
+    !isEditMode ||                       // create mode → always
+    isCreator ||                         // creator edit mode → always
+    selectedToSuggest.size > 0;          // non-creator with pending suggestion
 
   // =====================================================
   // RENDER
@@ -1472,19 +1576,17 @@ export const EventModal = ({
                     </div>
                   )}
 
-                  {/* CREATOR: multi-select invite list */}
+                  {/* CREATOR: multi-select invite list. The selection is
+                      sent via the footer's "Save changes" button — no
+                      dedicated Invite button lives here anymore. */}
                   {isCreator && (
                     <>
                       <div className="small text-secondary text-uppercase fw-semibold mb-2 d-flex justify-content-between align-items-center">
                         <span>Invite friends</span>
                         {selectedToInvite.size > 0 && (
-                          <Button
-                            size="sm"
-                            variant="primary"
-                            onClick={handleInviteBatch}
-                          >
-                            <FiUserPlus className="me-1" /> Invite ({selectedToInvite.size})
-                          </Button>
+                          <span className="sq-selection-hint">
+                            {selectedToInvite.size} selected · send with "Save changes"
+                          </span>
                         )}
                       </div>
                       {friendsAvailable.length === 0 ? (
@@ -1498,15 +1600,6 @@ export const EventModal = ({
                               <div
                                 key={u.id}
                                 className={`sq-friend-checkbox-row ${selected ? "selected" : ""}`}
-                                onClick={() => {
-                                  if (isPending) return;
-                                  setSelectedToInvite((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(u.id)) next.delete(u.id);
-                                    else next.add(u.id);
-                                    return next;
-                                  });
-                                }}
                               >
                                 {u.profile_picture_url ? (
                                   <img
@@ -1526,8 +1619,7 @@ export const EventModal = ({
                                   <Form.Check
                                     type="checkbox"
                                     checked={selected}
-                                    onChange={() => { /* handled by row onClick */ }}
-                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={() => toggleSelectedInvite(u.id)}
                                   />
                                 )}
                               </div>
@@ -1538,19 +1630,18 @@ export const EventModal = ({
                     </>
                   )}
 
-                  {/* NON-CREATOR ACCEPTED PARTICIPANT: suggest friends to the creator */}
+                  {/* NON-CREATOR ACCEPTED PARTICIPANT: suggest friends to
+                      the creator. The selection is sent via the footer's
+                      "Save changes" button — no dedicated Suggest button
+                      lives here anymore. */}
                   {!isCreator && eventData?.my_status === "accepted" && (
                     <>
                       <div className="small text-secondary text-uppercase fw-semibold mb-2 mt-4 d-flex justify-content-between align-items-center">
                         <span>Suggest inviting a friend</span>
                         {selectedToSuggest.size > 0 && (
-                          <Button
-                            size="sm"
-                            variant="warning"
-                            onClick={handleSuggestBatch}
-                          >
-                            <FiUserPlus className="me-1" /> Suggest ({selectedToSuggest.size})
-                          </Button>
+                          <span className="sq-selection-hint">
+                            {selectedToSuggest.size} selected · send with "Save changes"
+                          </span>
                         )}
                       </div>
                       <div className="small text-secondary mb-2">
@@ -1561,19 +1652,12 @@ export const EventModal = ({
                       ) : (
                         <div>
                           {friendsAvailable.map((u) => {
-                            const selected = selectedToSuggest.has(u.id);
+                            const isPending = pendingSuggestionIds.includes(u.id);
+                            const selected  = selectedToSuggest.has(u.id);
                             return (
                               <div
                                 key={u.id}
                                 className={`sq-friend-checkbox-row ${selected ? "selected" : ""}`}
-                                onClick={() => {
-                                  setSelectedToSuggest((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(u.id)) next.delete(u.id);
-                                    else next.add(u.id);
-                                    return next;
-                                  });
-                                }}
                               >
                                 {u.profile_picture_url ? (
                                   <img
@@ -1585,12 +1669,17 @@ export const EventModal = ({
                                   <div style={avatarStyle(u.id)}>{initials(u.email)}</div>
                                 )}
                                 <span style={{ flex: 1 }}>{u.email}</span>
-                                <Form.Check
-                                  type="checkbox"
-                                  checked={selected}
-                                  onChange={() => { /* handled by row onClick */ }}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
+                                {isPending ? (
+                                  <Badge bg="secondary">
+                                    <FiClock className="me-1" /> Pending
+                                  </Badge>
+                                ) : (
+                                  <Form.Check
+                                    type="checkbox"
+                                    checked={selected}
+                                    onChange={() => toggleSelectedSuggest(u.id)}
+                                  />
+                                )}
                               </div>
                             );
                           })}
@@ -1910,7 +1999,12 @@ export const EventModal = ({
             <FiMaximize2 className="me-1" /> Expand
           </Button>
         )}
-        {(!isEditMode || isCreator) && (
+        {/* "Save changes" is the only action that mutates the event.
+            Visible for: create mode, edit-mode creator (always), and
+            edit-mode non-creator who has picked at least one friend to
+            suggest. The handler in handleSave fans out to invitations
+            or suggestions depending on the role. */}
+        {showSaveButton && (
           <Button onClick={handleSave} disabled={saving || deleting}>
             {saving
               ? <Spinner animation="border" size="sm" />

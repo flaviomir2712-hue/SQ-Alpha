@@ -502,16 +502,43 @@ class ChatMessage(db.Model):
 
 
 # ── NOTIFICATION ──────────────────────────────────────────
-# Types currently emitted:
-#   - "friend_request"     payload: {friendship_id, from_user_id, from_email}
-#   - "event_invite"       payload: {event_id, invitation_id, from_user_id,
-#                                    from_email, event_title, event_date, event_time}
-#   - "invite_suggestion"  payload: {event_id, suggestion_id, suggested_user_id,
-#                                    suggested_user_email, from_user_id, from_email,
-#                                    event_title}
-#   - "event_public"       payload: {event_id, invitation_id, from_user_id,
-#                                    from_email, event_title, event_date, event_time}
-#                          (sent to every friend when a public event is created)
+# Types currently emitted (all enforced by the ck_notification_type
+# CheckConstraint below — keep both lists in sync when adding a new one):
+#
+#   FRIENDSHIP
+#     - "friend_request"       payload: {friendship_id, from_user_id, from_email}
+#     - "friend_accepted"      payload: {friendship_id, from_user_id, from_email}
+#
+#   EVENT INVITATIONS / VISIBILITY
+#     - "event_invite"         payload: {event_id, invitation_id, from_user_id,
+#                                        from_email, event_title, event_date, event_time}
+#     - "event_public"         payload: same as event_invite — sent to every
+#                                        friend when a public event is created/turned public
+#
+#   INVITE SUGGESTIONS
+#     - "invite_suggestion"    payload: {event_id, suggestion_id, suggested_user_id,
+#                                        suggested_user_email, from_user_id, from_email,
+#                                        event_title}                  (sent to creator)
+#     - "suggestion_approved"  payload: {event_id, event_title, suggested_user_id,
+#                                        suggested_user_email, from_user_id, from_email}
+#                                                                      (sent to suggester)
+#     - "suggestion_refused"   payload: same as suggestion_approved    (sent to suggester)
+#
+#   EVENT LIFECYCLE
+#     - "event_updated"        payload: {event_id, event_title, event_date, event_time,
+#                                        location, from_user_id, from_email}
+#                                        (sent to participants ≠ creator when meta changes)
+#     - "event_cancelled"      payload: {event_id, event_title, event_date, event_time,
+#                                        from_user_id, from_email}
+#                                        (sent to participants ≠ creator BEFORE delete)
+#     - "event_removed"        payload: {event_id, event_title, from_user_id, from_email}
+#                                        (sent to the user the creator just kicked out)
+#     - "rsvp_changed"         payload: {event_id, event_title, responder_id,
+#                                        responder_email, response}
+#                                        (sent to creator when a participant changes rsvp)
+#     - "event_reminder"       payload: {event_id, event_title, event_date, event_time,
+#                                        hours_until}
+#                                        (sent by the dispatch-reminders cron endpoint)
 class Notification(db.Model):
     __tablename__ = "notification"
 
@@ -526,7 +553,11 @@ class Notification(db.Model):
 
     __table_args__ = (
         CheckConstraint(
-            "type IN ('friend_request', 'event_invite', 'invite_suggestion', 'event_public')",
+            "type IN ("
+            "'friend_request', 'event_invite', 'invite_suggestion', 'event_public', "
+            "'friend_accepted', 'event_updated', 'event_cancelled', 'event_removed', "
+            "'rsvp_changed', 'suggestion_approved', 'suggestion_refused', 'event_reminder'"
+            ")",
             name="ck_notification_type",
         ),
         Index("ix_notification_user_read", "user_id", "is_read"),

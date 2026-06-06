@@ -20,6 +20,11 @@ CHAT_EDIT_WINDOW = timedelta(minutes=15)
 # JWT lifetime — coherent across all create_access_token calls.
 JWT_LIFETIME = timedelta(days=7)
 
+# Reminder look-ahead window: only "going" events starting within this
+# window from now get an event_reminder notif. Bounded per-user and
+# idempotent — see _dispatch_my_reminders below.
+REMINDER_WINDOW = timedelta(hours=24)
+
 
 # =========================================================
 # NOTIFICATION HELPERS (internal)
@@ -64,6 +69,190 @@ def _delete_invite_suggestion_notifications(event_id, suggestion_id=None):
         db.session.delete(n)
 
 
+# ─────────────────────────────────────────────────────────
+# MARK-AS-READ counterparts to the _delete_* helpers above.
+#
+# Use these when the user TOOK ACTION on the notification (accepted /
+# refused / responded). The notif stays in the bell, just no longer
+# bold, so the user can still scroll back and see "I accepted X's
+# request yesterday". Only the explicit X button in the UI actually
+# removes the row from the DB.
+#
+# The DELETE helpers are still used when the underlying entity goes
+# away (event deleted, friend request cancelled by sender, participant
+# kicked) — pointing the user to something that no longer exists makes
+# no sense.
+# ─────────────────────────────────────────────────────────
+
+def _mark_friend_request_notifications_read(friendship_id, status=None):
+    """Mark every friend_request notif for this friendship as read.
+    When `status` is given ("accepted" | "refused"), also stamp it into
+    the payload so the bell can render an updated label like "X is now
+    your friend" instead of the stale "X sent you a friend request"."""
+    notifs = Notification.query.filter_by(type="friend_request").all()
+    for n in notifs:
+        if (n.payload or {}).get("friendship_id") != friendship_id:
+            continue
+        n.is_read = True
+        if status:
+            # JSON columns need a fresh dict for SQLAlchemy to detect the
+            # mutation and emit an UPDATE — mutating in place is silently
+            # ignored by the change tracker.
+            payload = dict(n.payload or {})
+            payload["status"] = status
+            n.payload = payload
+
+
+def _mark_event_invite_notifications_read(event_id, user_id=None):
+    q = Notification.query.filter_by(type="event_invite")
+    if user_id is not None:
+        q = q.filter_by(user_id=user_id)
+    for n in q.all():
+        if (n.payload or {}).get("event_id") == event_id:
+            n.is_read = True
+
+
+def _mark_invite_suggestion_notifications_read(event_id, suggestion_id=None):
+    """Mark invite_suggestion notifications as read. Same filtering rules
+    as `_delete_invite_suggestion_notifications` but non-destructive."""
+    q = Notification.query.filter_by(type="invite_suggestion")
+    for n in q.all():
+        p = n.payload or {}
+        if p.get("event_id") != event_id:
+            continue
+        if suggestion_id is not None and p.get("suggestion_id") != suggestion_id:
+            continue
+        n.is_read = True
+
+
+# Lifecycle notifications attached to an event_id via payload. Called from
+# delete_event so cancelling an event cleans up its update/reminder/rsvp
+# trail too — without these the notifications would dangle after the event
+# row is gone (event_id in payload → 404 when clicked).
+_EVENT_PAYLOAD_NOTIF_TYPES = (
+    "event_updated", "event_cancelled", "event_removed",
+    "rsvp_changed", "event_reminder",
+)
+
+
+def _delete_event_payload_notifications(event_id, types=None):
+    types = types or _EVENT_PAYLOAD_NOTIF_TYPES
+    notifs = Notification.query.filter(Notification.type.in_(types)).all()
+    for n in notifs:
+        if (n.payload or {}).get("event_id") == event_id:
+            db.session.delete(n)
+
+
+def _notify_event_participants(event, notif_type, payload_extra=None,
+                               exclude_user_ids=None):
+    """Create a notification for every participant of `event` except the
+    creator and any IDs in `exclude_user_ids`. Centralises the payload
+    shape for event-wide notifications (updated / cancelled / etc.)."""
+    exclude = set(exclude_user_ids or [])
+    exclude.add(event.creator_id)
+    base = {
+        "event_id":    event.id,
+        "event_title": event.title,
+        "event_date":  event.date,
+        "event_time":  event.time,
+    }
+    base.update(payload_extra or {})
+    for p in event.participants:
+        if p.id in exclude:
+            continue
+        _create_notification(
+            user_id=p.id, notif_type=notif_type, payload=dict(base))
+
+
+def _notify_rsvp_changed(event, responder, response):
+    """Tell the creator that `responder` answered with `response`.
+    No-op if responder IS the creator (no self-pings)."""
+    if not event or not responder or responder.id == event.creator_id:
+        return
+    _create_notification(
+        user_id=event.creator_id,
+        notif_type="rsvp_changed",
+        payload={
+            "event_id":        event.id,
+            "event_title":     event.title,
+            "responder_id":    responder.id,
+            "responder_email": responder.email,
+            "response":        response,  # going | maybe | not_going
+        },
+    )
+
+
+def _dispatch_my_reminders(user_id):
+    """Per-user opportunistic reminder dispatcher.
+
+    Called as a side-effect from `GET /api/notifications` and
+    `/notifications/unread-count`. The work is bounded by the caller's
+    own going-events in the next REMINDER_WINDOW — typically 0-5 events
+    — so polling this from the navbar bell has negligible cost.
+
+    Idempotent: a single query collects the user's existing
+    event_reminder notifs and we skip every (event, user) pair already
+    covered. No global state, no throttle, no cross-user iteration.
+    """
+    now = datetime.utcnow()
+    upper = now + REMINDER_WINDOW
+
+    # 1. The user's own events where they answered "going".
+    rows = db.session.execute(
+        text(
+            "SELECT e.id, e.title, e.date, e.time "
+            "FROM event e "
+            "JOIN event_participants ep ON ep.event_id = e.id "
+            "WHERE ep.user_id = :uid AND ep.rsvp = 'going'"
+        ),
+        {"uid": user_id},
+    ).fetchall()
+    if not rows:
+        return
+
+    # 2. Which events already have a reminder for this user. Scoped to
+    #    `user_id` so the scan stays tiny even on a heavily-used account.
+    existing = Notification.query.filter_by(
+        user_id=user_id, type="event_reminder",
+    ).all()
+    sent_event_ids = {
+        (n.payload or {}).get("event_id") for n in existing
+    }
+
+    # 3. Create the missing ones. Skip past events and events outside
+    #    the window. Malformed date/time strings are silently dropped so
+    #    a single bad row never breaks the bell's polling.
+    created_any = False
+    for eid, title, date_s, time_s in rows:
+        if eid in sent_event_ids:
+            continue
+        try:
+            event_dt = datetime.strptime(
+                "{} {}".format(date_s, (time_s or "")[:5]),
+                "%Y-%m-%d %H:%M",
+            )
+        except (ValueError, TypeError):
+            continue
+        if not (now <= event_dt <= upper):
+            continue
+        hours_until = max(0, int((event_dt - now).total_seconds() // 3600))
+        _create_notification(
+            user_id=user_id,
+            notif_type="event_reminder",
+            payload={
+                "event_id":    eid,
+                "event_title": title,
+                "event_date":  date_s,
+                "event_time":  time_s,
+                "hours_until": hours_until,
+            },
+        )
+        created_any = True
+
+    if created_any:
+        db.session.commit()
+
+
 # =========================================================
 # CHAT MEMBERSHIP HELPER (internal)
 # =========================================================
@@ -72,7 +261,8 @@ def _get_or_create_membership(room_id, user_id):
     m = ChatRoomMembership.query.filter_by(
         room_id=room_id, user_id=user_id).first()
     if not m:
-        m = ChatRoomMembership(room_id=room_id, user_id=user_id, last_read_at=None)
+        m = ChatRoomMembership(
+            room_id=room_id, user_id=user_id, last_read_at=None)
         db.session.add(m)
     return m
 
@@ -93,7 +283,8 @@ def _are_friends(user_a_id, user_b_id):
     return Friendship.query.filter(
         Friendship.status == "accepted",
         ((Friendship.requester_id == user_a_id) & (Friendship.addressee_id == user_b_id)) |
-        ((Friendship.requester_id == user_b_id) & (Friendship.addressee_id == user_a_id))
+        ((Friendship.requester_id == user_b_id) &
+         (Friendship.addressee_id == user_a_id))
     ).first() is not None
 
 
@@ -101,11 +292,13 @@ def _get_friend_ids(user_id):
     """Return the list of user IDs who are accepted friends of `user_id`."""
     rows = Friendship.query.filter(
         Friendship.status == "accepted",
-        (Friendship.requester_id == user_id) | (Friendship.addressee_id == user_id),
+        (Friendship.requester_id == user_id) | (
+            Friendship.addressee_id == user_id),
     ).all()
     ids = []
     for f in rows:
-        ids.append(f.addressee_id if f.requester_id == user_id else f.requester_id)
+        ids.append(f.addressee_id if f.requester_id ==
+                   user_id else f.requester_id)
     return ids
 
 
@@ -282,7 +475,8 @@ def create_event():
             continue
         if not _are_friends(current_user_id, friend.id):
             continue  # silently skip non-friends
-        inv = EventInvitation(event_id=event.id, user_id=friend.id, inviter_id=current_user_id)
+        inv = EventInvitation(
+            event_id=event.id, user_id=friend.id, inviter_id=current_user_id)
         db.session.add(inv)
         invitations.append((friend, inv))
         seen.add(friend_id)
@@ -383,7 +577,18 @@ def update_event(event_id):
         return jsonify({"msg": "Only the creator can edit this event"}), 403
 
     body = request.get_json() or {}
-    editable = ["title", "date", "time", "location", "latitude", "longitude", "details", "image"]
+
+    # Detect meta changes BEFORE applying them. The participants get a
+    # "this event changed" notification only when date / time / location
+    # actually move — cosmetic edits (image, details, title) don't ping
+    # them so the notif stream stays useful.
+    meta_changed_fields = []
+    for f in ("date", "time", "location"):
+        if f in body and getattr(event, f) != body[f]:
+            meta_changed_fields.append(f)
+
+    editable = ["title", "date", "time", "location",
+                "latitude", "longitude", "details", "image"]
     for field in editable:
         if field in body:
             setattr(event, field, body[field])
@@ -399,7 +604,8 @@ def update_event(event_id):
         if new_public and not was_public:
             creator = db.session.get(User, current_user_id)
             existing_participant_ids = {p.id for p in event.participants}
-            existing_invite_ids = {inv.user_id for inv in (event.invitations or [])}
+            existing_invite_ids = {
+                inv.user_id for inv in (event.invitations or [])}
             new_invites = []
             for friend_id in _get_friend_ids(current_user_id):
                 if friend_id in existing_participant_ids or friend_id in existing_invite_ids:
@@ -427,6 +633,20 @@ def update_event(event_id):
                         "event_time": event.time,
                     },
                 )
+
+    # Notify participants of meaningful changes. Runs AFTER setattr so the
+    # payload carries the NEW values (date/time/location).
+    if meta_changed_fields:
+        creator = db.session.get(User, current_user_id)
+        _notify_event_participants(
+            event, "event_updated",
+            payload_extra={
+                "from_user_id":    current_user_id,
+                "from_email":      creator.email if creator else None,
+                "location":        event.location,
+                "changed_fields":  meta_changed_fields,
+            },
+        )
 
     db.session.commit()
     return jsonify({"msg": "Event updated", "event": event.serialize(current_user_id=current_user_id)}), 200
@@ -472,13 +692,15 @@ def invite_to_event(event_id):
             skipped.append({"user_id": target_id, "reason": "not your friend"})
             continue
         if target_id in participant_ids:
-            skipped.append({"user_id": target_id, "reason": "already participant"})
+            skipped.append(
+                {"user_id": target_id, "reason": "already participant"})
             continue
         if target_id in existing_inv_ids:
             skipped.append({"user_id": target_id, "reason": "already invited"})
             continue
 
-        inv = EventInvitation(event_id=event.id, user_id=target.id, inviter_id=current_user_id)
+        inv = EventInvitation(
+            event_id=event.id, user_id=target.id, inviter_id=current_user_id)
         db.session.add(inv)
         db.session.flush()
         _create_notification(
@@ -514,6 +736,9 @@ def invite_to_event(event_id):
 #     not_going    → drop invitation + notif (no join)
 # - If the user is already a participant:
 #     any value    → update their rsvp (stay in event/chat)
+#
+# Every branch pings the creator with a rsvp_changed notification so they
+# always know who answered what (and when somebody flips their answer).
 @api.route('/events/<int:event_id>/respond', methods=['PUT'])
 @jwt_required()
 def respond_event(event_id):
@@ -528,29 +753,35 @@ def respond_event(event_id):
         return jsonify({"msg": "response must be one of: going, maybe, not_going"}), 400
 
     is_participant = current_user_id in [p.id for p in event.participants]
-    inv = EventInvitation.query.filter_by(event_id=event_id, user_id=current_user_id).first()
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=current_user_id).first()
+    responder = db.session.get(User, current_user_id)
 
     if inv:
         if response == "not_going":
             # Decline the invitation
             db.session.delete(inv)
-            _delete_event_invite_notifications(event_id, user_id=current_user_id)
+            _mark_event_invite_notifications_read(
+                event_id, user_id=current_user_id)
+            _notify_rsvp_changed(event, responder, "not_going")
             db.session.commit()
             return jsonify({
                 "msg": "Invitation declined",
                 "event": event.serialize(current_user_id=current_user_id),
             }), 200
         # going / maybe → join + set rsvp
-        user = db.session.get(User, current_user_id)
-        if user not in event.participants:
-            event.participants.append(user)
+        if responder not in event.participants:
+            event.participants.append(responder)
         db.session.delete(inv)
-        _delete_event_invite_notifications(event_id, user_id=current_user_id)
+        _mark_event_invite_notifications_read(
+            event_id, user_id=current_user_id)
         db.session.flush()
         db.session.execute(
-            text("UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
+            text(
+                "UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
             {"r": response, "eid": event_id, "uid": current_user_id},
         )
+        _notify_rsvp_changed(event, responder, response)
         db.session.commit()
         return jsonify({
             "msg": "Invitation accepted",
@@ -559,9 +790,11 @@ def respond_event(event_id):
 
     if is_participant:
         db.session.execute(
-            text("UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
+            text(
+                "UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
             {"r": response, "eid": event_id, "uid": current_user_id},
         )
+        _notify_rsvp_changed(event, responder, response)
         db.session.commit()
         return jsonify({
             "msg": "RSVP updated",
@@ -572,8 +805,6 @@ def respond_event(event_id):
 
 
 # ---------- RSVP (legacy, participants only) ----------
-# Body: { "rsvp": "going" | "maybe" | "not_going" | null }
-# Kept for back-compat; new code should use /respond.
 @api.route('/events/<int:event_id>/rsvp', methods=['PATCH'])
 @jwt_required()
 def rsvp_event(event_id):
@@ -581,22 +812,24 @@ def rsvp_event(event_id):
     event = db.session.get(Event, event_id)
     if not event:
         return jsonify({"msg": "Event not found"}), 404
+
     if current_user_id not in [p.id for p in event.participants]:
         return jsonify({"msg": "You are not a participant of this event"}), 403
 
     body = request.get_json() or {}
-    rsvp_value = body.get("rsvp")
-    if rsvp_value not in (None, "going", "maybe", "not_going"):
-        return jsonify({"msg": "rsvp must be one of: going, maybe, not_going, or null"}), 400
+    rsvp = body.get("rsvp")
+    if rsvp not in ("going", "maybe", "not_going"):
+        return jsonify({"msg": "rsvp must be one of: going, maybe, not_going"}), 400
 
     db.session.execute(
-        text("UPDATE event_participants SET rsvp = :rsvp WHERE event_id = :eid AND user_id = :uid"),
-        {"rsvp": rsvp_value, "eid": event_id, "uid": current_user_id},
+        text("UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
+        {"r": rsvp, "eid": event_id, "uid": current_user_id},
     )
+    responder = db.session.get(User, current_user_id)
+    _notify_rsvp_changed(event, responder, rsvp)
     db.session.commit()
     return jsonify({
         "msg": "RSVP updated",
-        "rsvp": rsvp_value,
         "event": event.serialize(current_user_id=current_user_id),
     }), 200
 
@@ -611,7 +844,8 @@ def accept_event_invitation(event_id):
     if not event:
         return jsonify({"msg": "Event not found"}), 404
 
-    inv = EventInvitation.query.filter_by(event_id=event_id, user_id=current_user_id).first()
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=current_user_id).first()
     if not inv:
         return jsonify({"msg": "No pending invitation for this event"}), 404
 
@@ -619,12 +853,13 @@ def accept_event_invitation(event_id):
     if user not in event.participants:
         event.participants.append(user)
     db.session.delete(inv)
-    _delete_event_invite_notifications(event_id, user_id=current_user_id)
+    _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
     db.session.flush()
     db.session.execute(
         text("UPDATE event_participants SET rsvp = 'going' WHERE event_id = :eid AND user_id = :uid"),
         {"eid": event_id, "uid": current_user_id},
     )
+    _notify_rsvp_changed(event, user, "going")
     db.session.commit()
     return jsonify({"msg": "Invitation accepted", "event": event.serialize(current_user_id=current_user_id)}), 200
 
@@ -638,12 +873,15 @@ def refuse_event_invitation(event_id):
     if not event:
         return jsonify({"msg": "Event not found"}), 404
 
-    inv = EventInvitation.query.filter_by(event_id=event_id, user_id=current_user_id).first()
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=current_user_id).first()
     if not inv:
         return jsonify({"msg": "No pending invitation for this event"}), 404
 
+    responder = db.session.get(User, current_user_id)
     db.session.delete(inv)
-    _delete_event_invite_notifications(event_id, user_id=current_user_id)
+    _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
+    _notify_rsvp_changed(event, responder, "not_going")
     db.session.commit()
     return jsonify({"msg": "Invitation refused"}), 200
 
@@ -661,13 +899,17 @@ def leave_event(event_id):
     if current_user_id == event.creator_id:
         return jsonify({"msg": "The creator cannot leave their own event"}), 400
 
-    target = next((p for p in event.participants if p.id == current_user_id), None)
+    target = next(
+        (p for p in event.participants if p.id == current_user_id), None)
     if not target:
         return jsonify({"msg": "You are not a participant of this event"}), 404
 
     event.participants.remove(target)
     # Drop any pending suggestion they made for this event
-    InviteSuggestion.query.filter_by(event_id=event_id, suggested_by_id=current_user_id).delete()
+    InviteSuggestion.query.filter_by(
+        event_id=event_id, suggested_by_id=current_user_id).delete()
+    # Tell the creator someone left — semantically a "rsvp_changed → not_going".
+    _notify_rsvp_changed(event, target, "not_going")
     db.session.commit()
     return jsonify({"msg": "Left event", "event_id": event_id}), 200
 
@@ -682,8 +924,30 @@ def delete_event(event_id):
     if event.creator_id != current_user_id:
         return jsonify({"msg": "Only the creator can delete this event"}), 403
 
+    creator = db.session.get(User, current_user_id)
+
+    # Notify participants BEFORE deletion — once the event row is gone we
+    # lose access to event.title/.participants and the notif payload would
+    # be empty.
+    _notify_event_participants(
+        event, "event_cancelled",
+        payload_extra={
+            "from_user_id": current_user_id,
+            "from_email":   creator.email if creator else None,
+        },
+    )
+
     _delete_event_invite_notifications(event_id)
     _delete_invite_suggestion_notifications(event_id)
+    # Drop dangling lifecycle notifs for this event so the bell doesn't
+    # keep linking to a now-404 event. event_cancelled created above stays
+    # (it doesn't reference the event row in the payload beyond id+title).
+    _delete_event_payload_notifications(
+        event_id,
+        types=("event_updated", "event_removed",
+               "rsvp_changed", "event_reminder"),
+    )
+
     EventInvitation.query.filter_by(event_id=event_id).delete()
     InviteSuggestion.query.filter_by(event_id=event_id).delete()
     event.participants.clear()
@@ -711,21 +975,52 @@ def remove_participant(event_id, user_id):
     if current_user_id != event.creator_id and current_user_id != user_id:
         return jsonify({"msg": "Not allowed"}), 403
 
+    # Only the creator kicking someone else counts as a "you were removed"
+    # event. Self-leave is already covered by /leave above.
+    kicked_by_creator = (
+        current_user_id == event.creator_id and current_user_id != user_id
+    )
+    creator = db.session.get(User, event.creator_id)
+
     # Accepted participant?
     target = next((p for p in event.participants if p.id == user_id), None)
     if target:
         event.participants.remove(target)
         _delete_event_invite_notifications(event_id, user_id=user_id)
         # Also drop any suggestion the removed user made
-        InviteSuggestion.query.filter_by(event_id=event_id, suggested_by_id=user_id).delete()
+        InviteSuggestion.query.filter_by(
+            event_id=event_id, suggested_by_id=user_id).delete()
+        if kicked_by_creator:
+            _create_notification(
+                user_id=user_id,
+                notif_type="event_removed",
+                payload={
+                    "event_id":     event.id,
+                    "event_title":  event.title,
+                    "from_user_id": current_user_id,
+                    "from_email":   creator.email if creator else None,
+                },
+            )
         db.session.commit()
         return jsonify({"msg": "Participant removed", "event": event.serialize(current_user_id=current_user_id)}), 200
 
     # Pending invitee?
-    inv = EventInvitation.query.filter_by(event_id=event_id, user_id=user_id).first()
+    inv = EventInvitation.query.filter_by(
+        event_id=event_id, user_id=user_id).first()
     if inv:
         db.session.delete(inv)
         _delete_event_invite_notifications(event_id, user_id=user_id)
+        if kicked_by_creator:
+            _create_notification(
+                user_id=user_id,
+                notif_type="event_removed",
+                payload={
+                    "event_id":     event.id,
+                    "event_title":  event.title,
+                    "from_user_id": current_user_id,
+                    "from_email":   creator.email if creator else None,
+                },
+            )
         db.session.commit()
         return jsonify({"msg": "Invitation cancelled", "event": event.serialize(current_user_id=current_user_id)}), 200
 
@@ -741,8 +1036,10 @@ def remove_participant(event_id, user_id):
 #     → InviteSuggestion rows + a single "invite_suggestion" notif per
 #       suggestion to the creator.
 #   - The creator reviews and approves/refuses each, or approves all.
-#     → Approve → convert to real EventInvitation + notif to the friend.
-#     → Refuse  → drop the suggestion (and its notif).
+#     → Approve → convert to real EventInvitation + notif to the friend
+#                 + "suggestion_approved" notif back to the suggester.
+#     → Refuse  → drop the suggestion (and its notif)
+#                 + "suggestion_refused" notif back to the suggester.
 
 @api.route('/events/<int:event_id>/suggest-invite', methods=['POST'])
 @jwt_required()
@@ -785,13 +1082,15 @@ def suggest_invite_to_event(event_id):
             skipped.append({"user_id": target_id, "reason": "not your friend"})
             continue
         if target_id in participant_ids:
-            skipped.append({"user_id": target_id, "reason": "already participant"})
+            skipped.append(
+                {"user_id": target_id, "reason": "already participant"})
             continue
         if target_id in existing_inv_ids:
             skipped.append({"user_id": target_id, "reason": "already invited"})
             continue
         if target_id in existing_sug_ids:
-            skipped.append({"user_id": target_id, "reason": "already suggested"})
+            skipped.append(
+                {"user_id": target_id, "reason": "already suggested"})
             continue
 
         sug = InviteSuggestion(
@@ -851,26 +1150,66 @@ def list_event_suggestions(event_id):
 
 
 def _approve_suggestion_internal(event, sug):
-    """Convert a suggestion into a real EventInvitation + notif to the friend.
-       Caller commits."""
+    """Convert a suggestion into a real EventInvitation + notif to the
+    friend AND a suggestion_approved notif back to the suggester. Caller
+    commits."""
     creator = event.creator
     target = sug.suggested_user
+    suggester_id = sug.suggested_by_id
+    suggester_user = sug.suggested_by
+    target_id_snapshot = sug.suggested_user_id
+    target_email_snapshot = target.email if target else None
+
     if not target:
+        # Suggested user got deleted in the meantime — drop the suggestion
+        # silently. No notifications.
+        _delete_invite_suggestion_notifications(event.id, suggestion_id=sug.id)
         db.session.delete(sug)
         return None
 
-    # If somehow the user is already participant or invited, just drop the suggestion.
+    # If somehow the user is already participant or invited, just drop the
+    # suggestion. Still notify the suggester so they know we processed it.
     if target.id in [p.id for p in event.participants]:
-        _delete_invite_suggestion_notifications(event.id, suggestion_id=sug.id)
+        _mark_invite_suggestion_notifications_read(
+            event.id, suggestion_id=sug.id)
         db.session.delete(sug)
+        if suggester_id and suggester_id != event.creator_id:
+            _create_notification(
+                user_id=suggester_id,
+                notif_type="suggestion_approved",
+                payload={
+                    "event_id":              event.id,
+                    "event_title":           event.title,
+                    "suggested_user_id":     target_id_snapshot,
+                    "suggested_user_email":  target_email_snapshot,
+                    "from_user_id":          event.creator_id,
+                    "from_email":            creator.email if creator else None,
+                    "already_member":        True,
+                },
+            )
         return None
 
     existing_inv = EventInvitation.query.filter_by(
         event_id=event.id, user_id=target.id
     ).first()
     if existing_inv:
-        _delete_invite_suggestion_notifications(event.id, suggestion_id=sug.id)
+        _mark_invite_suggestion_notifications_read(
+            event.id, suggestion_id=sug.id)
         db.session.delete(sug)
+        if suggester_id and suggester_id != event.creator_id:
+            _create_notification(
+                user_id=suggester_id,
+                notif_type="suggestion_approved",
+                payload={
+                    "event_id":              event.id,
+                    "event_title":           event.title,
+                    "suggested_user_id":     target_id_snapshot,
+                    "suggested_user_email":  target_email_snapshot,
+                    "from_user_id":          event.creator_id,
+                    "from_email":            creator.email if creator else None,
+                    "already_invited":       True,
+                },
+            )
         return existing_inv
 
     inv = EventInvitation(
@@ -891,7 +1230,20 @@ def _approve_suggestion_internal(event, sug):
             "event_time":    event.time,
         },
     )
-    _delete_invite_suggestion_notifications(event.id, suggestion_id=sug.id)
+    if suggester_id and suggester_id != event.creator_id:
+        _create_notification(
+            user_id=suggester_id,
+            notif_type="suggestion_approved",
+            payload={
+                "event_id":              event.id,
+                "event_title":           event.title,
+                "suggested_user_id":     target_id_snapshot,
+                "suggested_user_email":  target_email_snapshot,
+                "from_user_id":          event.creator_id,
+                "from_email":            creator.email if creator else None,
+            },
+        )
+    _mark_invite_suggestion_notifications_read(event.id, suggestion_id=sug.id)
     db.session.delete(sug)
     return inv
 
@@ -933,8 +1285,32 @@ def refuse_suggestion(event_id, suggestion_id):
     if not sug or sug.event_id != event_id:
         return jsonify({"msg": "Suggestion not found"}), 404
 
-    _delete_invite_suggestion_notifications(event_id, suggestion_id=suggestion_id)
+    # Snapshot fields the suggester wants to see in their notification
+    # BEFORE we delete the row.
+    creator = db.session.get(User, current_user_id)
+    suggester_id = sug.suggested_by_id
+    target_snapshot = sug.suggested_user
+    target_id_snap = sug.suggested_user_id
+    target_email_snap = target_snapshot.email if target_snapshot else None
+
+    _mark_invite_suggestion_notifications_read(
+        event_id, suggestion_id=suggestion_id)
     db.session.delete(sug)
+
+    if suggester_id and suggester_id != event.creator_id:
+        _create_notification(
+            user_id=suggester_id,
+            notif_type="suggestion_refused",
+            payload={
+                "event_id":              event_id,
+                "event_title":           event.title,
+                "suggested_user_id":     target_id_snap,
+                "suggested_user_email":  target_email_snap,
+                "from_user_id":          current_user_id,
+                "from_email":            creator.email if creator else None,
+            },
+        )
+
     db.session.commit()
     return jsonify({
         "msg": "Suggestion refused",
@@ -977,8 +1353,40 @@ def refuse_all_suggestions(event_id):
     if event.creator_id != current_user_id:
         return jsonify({"msg": "Only the creator can refuse suggestions"}), 403
 
-    _delete_invite_suggestion_notifications(event_id)
+    creator = db.session.get(User, current_user_id)
+
+    # Snapshot suggesters + targets before we delete so each suggester gets
+    # a proper notification with payload (event_id alone wouldn't be enough
+    # if the frontend later wants to render which friend was refused).
+    pending = list(event.suggestions or [])
+    snapshots = [
+        {
+            "suggester_id":     s.suggested_by_id,
+            "target_id":        s.suggested_user_id,
+            "target_email":     s.suggested_user.email if s.suggested_user else None,
+        }
+        for s in pending
+    ]
+
+    _mark_invite_suggestion_notifications_read(event_id)
     count = InviteSuggestion.query.filter_by(event_id=event_id).delete()
+
+    for snap in snapshots:
+        sid = snap["suggester_id"]
+        if sid and sid != event.creator_id:
+            _create_notification(
+                user_id=sid,
+                notif_type="suggestion_refused",
+                payload={
+                    "event_id":              event_id,
+                    "event_title":           event.title,
+                    "suggested_user_id":     snap["target_id"],
+                    "suggested_user_email":  snap["target_email"],
+                    "from_user_id":          current_user_id,
+                    "from_email":            creator.email if creator else None,
+                },
+            )
+
     db.session.commit()
     return jsonify({
         "msg": f"{count} suggestion(s) refused",
@@ -996,7 +1404,8 @@ def list_friends():
     current_user_id = int(get_jwt_identity())
     friendships = Friendship.query.filter(
         Friendship.status == "accepted",
-        (Friendship.requester_id == current_user_id) | (Friendship.addressee_id == current_user_id)
+        (Friendship.requester_id == current_user_id) | (
+            Friendship.addressee_id == current_user_id)
     ).all()
     return jsonify([f.serialize(current_user_id=current_user_id) for f in friendships]), 200
 
@@ -1014,7 +1423,8 @@ def list_friend_requests():
         base = base.filter(Friendship.requester_id == current_user_id)
     elif direction == "all":
         base = base.filter(
-            (Friendship.requester_id == current_user_id) | (Friendship.addressee_id == current_user_id)
+            (Friendship.requester_id == current_user_id) | (
+                Friendship.addressee_id == current_user_id)
         )
     else:
         return jsonify({"msg": "direction must be incoming, outgoing or all"}), 400
@@ -1041,7 +1451,8 @@ def send_friend_request():
 
     existing = Friendship.query.filter(
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == target.id)) |
-        ((Friendship.requester_id == target.id) & (Friendship.addressee_id == current_user_id))
+        ((Friendship.requester_id == target.id) &
+         (Friendship.addressee_id == current_user_id))
     ).first()
 
     me = db.session.get(User, current_user_id)
@@ -1063,7 +1474,8 @@ def send_friend_request():
         _create_notification(
             user_id=target.id,
             notif_type="friend_request",
-            payload={"friendship_id": existing.id, "from_user_id": current_user_id, "from_email": me.email},
+            payload={"friendship_id": existing.id,
+                     "from_user_id": current_user_id, "from_email": me.email},
         )
         db.session.commit()
         return jsonify({
@@ -1071,14 +1483,16 @@ def send_friend_request():
             "friendship": existing.serialize(current_user_id=current_user_id),
         }), 201
 
-    new_friendship = Friendship(requester_id=current_user_id, addressee_id=target.id, status="pending")
+    new_friendship = Friendship(
+        requester_id=current_user_id, addressee_id=target.id, status="pending")
     db.session.add(new_friendship)
     db.session.flush()
 
     _create_notification(
         user_id=target.id,
         notif_type="friend_request",
-        payload={"friendship_id": new_friendship.id, "from_user_id": current_user_id, "from_email": me.email},
+        payload={"friendship_id": new_friendship.id,
+                 "from_user_id": current_user_id, "from_email": me.email},
     )
 
     db.session.commit()
@@ -1101,7 +1515,21 @@ def accept_friend_request(request_id):
         return jsonify({"msg": f"Request is already {friendship.status}"}), 409
 
     friendship.status = "accepted"
-    _delete_friend_request_notifications(friendship.id)
+    _mark_friend_request_notifications_read(friendship.id, status="accepted")
+
+    # Tell the original requester their request was accepted. The notif
+    # closes the loop UX-wise: until now they only saw "outgoing pending".
+    me = db.session.get(User, current_user_id)
+    _create_notification(
+        user_id=friendship.requester_id,
+        notif_type="friend_accepted",
+        payload={
+            "friendship_id": friendship.id,
+            "from_user_id":  current_user_id,
+            "from_email":    me.email if me else None,
+        },
+    )
+
     db.session.commit()
     return jsonify({
         "msg": "Friend request accepted",
@@ -1122,7 +1550,7 @@ def refuse_friend_request(request_id):
         return jsonify({"msg": f"Request is already {friendship.status}"}), 409
 
     friendship.status = "refused"
-    _delete_friend_request_notifications(friendship.id)
+    _mark_friend_request_notifications_read(friendship.id, status="refused")
     db.session.commit()
     return jsonify({
         "msg": "Friend request refused",
@@ -1155,7 +1583,8 @@ def unfriend(user_id):
     friendship = Friendship.query.filter(
         Friendship.status == "accepted",
         ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == user_id)) |
-        ((Friendship.requester_id == user_id) & (Friendship.addressee_id == current_user_id))
+        ((Friendship.requester_id == user_id) &
+         (Friendship.addressee_id == current_user_id))
     ).first()
     if not friendship:
         return jsonify({"msg": "Friendship not found"}), 404
@@ -1181,7 +1610,8 @@ def search_users():
     for u in users:
         pair = Friendship.query.filter(
             ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == u.id)) |
-            ((Friendship.requester_id == u.id) & (Friendship.addressee_id == current_user_id))
+            ((Friendship.requester_id == u.id) &
+             (Friendship.addressee_id == current_user_id))
         ).first()
         results.append({
             "id": u.id,
@@ -1202,11 +1632,13 @@ def search_users():
 # =========================================================
 
 def _compute_stats(user_id):
-    events_created_count = Event.query.filter(Event.creator_id == user_id).count()
+    events_created_count = Event.query.filter(
+        Event.creator_id == user_id).count()
     today = datetime.utcnow().date()
 
     all_events = Event.query.all()
-    participated_all = [e for e in all_events if user_id in [p.id for p in e.participants]]
+    participated_all = [e for e in all_events if user_id in [
+        p.id for p in e.participants]]
 
     def _is_past(e):
         try:
@@ -1271,7 +1703,8 @@ def update_my_profile():
 
     new_username = body.get("username")
     if new_username and new_username != user.username:
-        clash = User.query.filter(User.username == new_username, User.id != current_user_id).first()
+        clash = User.query.filter(
+            User.username == new_username, User.id != current_user_id).first()
         if clash:
             return jsonify({"msg": "Username already taken"}), 409
 
@@ -1296,7 +1729,8 @@ def get_user_profile(user_id):
     if user_id != current_user_id:
         friendship = Friendship.query.filter(
             ((Friendship.requester_id == current_user_id) & (Friendship.addressee_id == user_id)) |
-            ((Friendship.requester_id == user_id) & (Friendship.addressee_id == current_user_id))
+            ((Friendship.requester_id == user_id) &
+             (Friendship.addressee_id == current_user_id))
         ).first()
 
     is_self = (user_id == current_user_id)
@@ -1318,17 +1752,17 @@ def get_user_profile(user_id):
         data["birthdate"] = user.birthdate
 
     if is_self:
-        data["friendship_status"]    = "self"
+        data["friendship_status"] = "self"
         data["friendship_direction"] = None
-        data["friendship_id"]        = None
+        data["friendship_id"] = None
     elif friendship:
-        data["friendship_status"]    = friendship.status
+        data["friendship_status"] = friendship.status
         data["friendship_direction"] = "outgoing" if friendship.requester_id == current_user_id else "incoming"
-        data["friendship_id"]        = friendship.id
+        data["friendship_id"] = friendship.id
     else:
-        data["friendship_status"]    = "none"
+        data["friendship_status"] = "none"
         data["friendship_direction"] = None
-        data["friendship_id"]        = None
+        data["friendship_id"] = None
 
     data["stats"] = _compute_stats(user_id)
     return jsonify(data), 200
@@ -1362,7 +1796,8 @@ def chat_unread_count():
     for r in all_rooms:
         if not _can_access_room(r, current_user_id):
             continue
-        membership = next((m for m in r.memberships if m.user_id == current_user_id), None)
+        membership = next(
+            (m for m in r.memberships if m.user_id == current_user_id), None)
         last_read_at = membership.last_read_at if membership else None
         for msg in r.messages:
             if msg.sender_id == current_user_id or msg.deleted:
@@ -1411,7 +1846,8 @@ def create_or_get_dm():
         return jsonify({"msg": "You can only DM accepted friends"}), 403
 
     user_a, user_b = sorted([current_user_id, target_id])
-    room = ChatRoom.query.filter_by(type="dm", user_a_id=user_a, user_b_id=user_b).first()
+    room = ChatRoom.query.filter_by(
+        type="dm", user_a_id=user_a, user_b_id=user_b).first()
     if room:
         return jsonify({"msg": "DM already exists", "room": room.serialize(current_user_id=current_user_id)}), 200
 
@@ -1443,7 +1879,8 @@ def chat_search():
 
     friendships = Friendship.query.filter(
         Friendship.status == "accepted",
-        (Friendship.requester_id == current_user_id) | (Friendship.addressee_id == current_user_id)
+        (Friendship.requester_id == current_user_id) | (
+            Friendship.addressee_id == current_user_id)
     ).all()
 
     friends = []
@@ -1454,7 +1891,8 @@ def chat_search():
         if q_low not in (other.email or "").lower() and q_low not in (other.username or "").lower():
             continue
         ua, ub = sorted([current_user_id, other.id])
-        dm = ChatRoom.query.filter_by(type="dm", user_a_id=ua, user_b_id=ub).first()
+        dm = ChatRoom.query.filter_by(
+            type="dm", user_a_id=ua, user_b_id=ub).first()
         friends.append({
             "user": {
                 "id": other.id,
@@ -1478,7 +1916,8 @@ def list_room_messages(room_id):
     if not _can_access_room(room, current_user_id):
         return jsonify({"msg": "Not allowed in this room"}), 403
 
-    messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
+    messages = ChatMessage.query.filter_by(
+        room_id=room.id).order_by(ChatMessage.created_at).all()
     return jsonify({
         "room_id": room.id,
         "type": room.type,
@@ -1594,7 +2033,8 @@ def list_event_messages(event_id):
         db.session.add(room)
         db.session.commit()
 
-    messages = ChatMessage.query.filter_by(room_id=room.id).order_by(ChatMessage.created_at).all()
+    messages = ChatMessage.query.filter_by(
+        room_id=room.id).order_by(ChatMessage.created_at).all()
     return jsonify({"room_id": room.id, "messages": [m.serialize() for m in messages]}), 200
 
 
@@ -1643,6 +2083,13 @@ def post_event_message(event_id):
 @jwt_required()
 def list_notifications():
     current_user_id = int(get_jwt_identity())
+    # Opportunistic per-user reminder dispatch. Wrapped in try/except so
+    # a dispatcher failure never breaks the bell — the user still sees
+    # whatever notifications are already in the DB.
+    try:
+        _dispatch_my_reminders(current_user_id)
+    except Exception:
+        db.session.rollback()
     q = Notification.query.filter_by(user_id=current_user_id)
     if request.args.get("only_unread") in ("1", "true", "True"):
         q = q.filter_by(is_read=False)
@@ -1654,7 +2101,14 @@ def list_notifications():
 @jwt_required()
 def notifications_unread_count():
     current_user_id = int(get_jwt_identity())
-    count = Notification.query.filter_by(user_id=current_user_id, is_read=False).count()
+    # Same opportunistic dispatch as /notifications — the bell polls this
+    # endpoint, so any new reminder pops up on the next tick.
+    try:
+        _dispatch_my_reminders(current_user_id)
+    except Exception:
+        db.session.rollback()
+    count = Notification.query.filter_by(
+        user_id=current_user_id, is_read=False).count()
     return jsonify({"unread_count": count}), 200
 
 
@@ -1677,7 +2131,8 @@ def mark_notification_read(notif_id):
 @jwt_required()
 def mark_all_notifications_read():
     current_user_id = int(get_jwt_identity())
-    notifs = Notification.query.filter_by(user_id=current_user_id, is_read=False).all()
+    notifs = Notification.query.filter_by(
+        user_id=current_user_id, is_read=False).all()
     for n in notifs:
         n.is_read = True
     db.session.commit()

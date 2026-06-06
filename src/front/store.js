@@ -12,16 +12,27 @@ const safeParse = (raw) => {
   }
 };
 
-// Persisted state value used by the new map-time-filter dropdown in the
-// navbar. `null` means "no filter" (show all upcoming events).
-const FILTER_STORAGE_KEY = "sq_map_filter_days";
+// ─────────────────────────────────────────────────────────────
+// Map-event filter persistence
+// Three independent dimensions are persisted, all read at boot
+// and cleared on logout:
+//   - mapFilterDays       → number | null   (look-ahead window)
+//   - mapFilterVisibility → "all" | "public" | "private"
+//   - mapFilterStatus     → "all" | "going" | "maybe" | "not_going" | "pending" | "created"
+// ─────────────────────────────────────────────────────────────
+const FILTER_DAYS_KEY       = "sq_map_filter_days";
+const FILTER_VISIBILITY_KEY = "sq_map_filter_visibility";
+const FILTER_STATUS_KEY     = "sq_map_filter_status";
+
+const VALID_VISIBILITY = new Set(["all", "public", "private"]);
+const VALID_STATUS     = new Set(["all", "going", "maybe", "not_going", "pending", "created"]);
 
 const readStoredFilter = () => {
   try {
-    const v = localStorage.getItem(FILTER_STORAGE_KEY);
+    const v = localStorage.getItem(FILTER_DAYS_KEY);
     if (v === null || v === "null" || v === "") return null;
     const n = parseInt(v, 10);
-    return Number.isFinite(n) && n > 0 ? n : null;
+    return Number.isFinite(n) && n >= 0 ? n : null;
   } catch {
     return null;
   }
@@ -29,8 +40,40 @@ const readStoredFilter = () => {
 
 const writeStoredFilter = (val) => {
   try {
-    if (val === null || val === undefined) localStorage.removeItem(FILTER_STORAGE_KEY);
-    else localStorage.setItem(FILTER_STORAGE_KEY, String(val));
+    if (val === null || val === undefined) localStorage.removeItem(FILTER_DAYS_KEY);
+    else localStorage.setItem(FILTER_DAYS_KEY, String(val));
+  } catch { /* ignore */ }
+};
+
+const readStoredVisibility = () => {
+  try {
+    const v = localStorage.getItem(FILTER_VISIBILITY_KEY);
+    return VALID_VISIBILITY.has(v) ? v : "all";
+  } catch {
+    return "all";
+  }
+};
+
+const writeStoredVisibility = (val) => {
+  try {
+    if (val === "all" || val === null || val === undefined) localStorage.removeItem(FILTER_VISIBILITY_KEY);
+    else if (VALID_VISIBILITY.has(val)) localStorage.setItem(FILTER_VISIBILITY_KEY, val);
+  } catch { /* ignore */ }
+};
+
+const readStoredStatus = () => {
+  try {
+    const v = localStorage.getItem(FILTER_STATUS_KEY);
+    return VALID_STATUS.has(v) ? v : "all";
+  } catch {
+    return "all";
+  }
+};
+
+const writeStoredStatus = (val) => {
+  try {
+    if (val === "all" || val === null || val === undefined) localStorage.removeItem(FILTER_STATUS_KEY);
+    else if (VALID_STATUS.has(val)) localStorage.setItem(FILTER_STATUS_KEY, val);
   } catch { /* ignore */ }
 };
 
@@ -57,7 +100,13 @@ export const initialStore = () => {
     // ── Map filter (navbar dropdown) ──────────────────
     // Number of days to look ahead. null = no filter (show all upcoming).
     // Persisted to localStorage so the choice survives reloads.
-    mapFilterDays: readStoredFilter(),
+    mapFilterDays:       readStoredFilter(),
+    // Visibility filter: "all" | "public" | "private". Default "all".
+    mapFilterVisibility: readStoredVisibility(),
+    // Status filter: "all" | "going" | "maybe" | "not_going" | "pending" | "created".
+    // "all" keeps the legacy behaviour of hiding pending invitations from the map.
+    // "pending" inverts it to show ONLY pending invitations.
+    mapFilterStatus:     readStoredStatus(),
   };
 };
 
@@ -117,6 +166,8 @@ export default function storeReducer(store, action = {}) {
 
     case "logout":
       writeStoredFilter(null);
+      writeStoredVisibility("all");
+      writeStoredStatus("all");
       return {
         ...store,
         user: null,
@@ -128,6 +179,8 @@ export default function storeReducer(store, action = {}) {
         notifications: [],
         unreadNotifsCount: 0,
         mapFilterDays: null,
+        mapFilterVisibility: "all",
+        mapFilterStatus: "all",
       };
 
     // ── friends ───────────────────────────────────
@@ -167,10 +220,37 @@ export default function storeReducer(store, action = {}) {
     // payload: number of days (1, 3, 7, 14, 30, 90) or null to clear.
     case "set_map_filter_days": {
       const v = action.payload === null || action.payload === undefined ? null : Number(action.payload);
-      const safe = (typeof v === "number" && Number.isFinite(v) && v > 0) ? v : null;
+      const safe = (typeof v === "number" && Number.isFinite(v) && v >= 0) ? v : null;
       writeStoredFilter(safe);
       return { ...store, mapFilterDays: safe };
     }
+
+    // payload: "all" | "public" | "private"
+    case "set_map_filter_visibility": {
+      const v = VALID_VISIBILITY.has(action.payload) ? action.payload : "all";
+      writeStoredVisibility(v);
+      return { ...store, mapFilterVisibility: v };
+    }
+
+    // payload: "all" | "going" | "maybe" | "not_going" | "pending" | "created"
+    case "set_map_filter_status": {
+      const v = VALID_STATUS.has(action.payload) ? action.payload : "all";
+      writeStoredStatus(v);
+      return { ...store, mapFilterStatus: v };
+    }
+
+    // Clears every map filter dimension at once. Handy for a "Reset filters"
+    // button in the dropdown.
+    case "reset_map_filters":
+      writeStoredFilter(null);
+      writeStoredVisibility("all");
+      writeStoredStatus("all");
+      return {
+        ...store,
+        mapFilterDays: null,
+        mapFilterVisibility: "all",
+        mapFilterStatus: "all",
+      };
 
     default:
       console.warn("Unknown action type:", action.type);

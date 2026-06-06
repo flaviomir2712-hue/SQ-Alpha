@@ -1,4 +1,5 @@
 // src/front/components/NotificationBell.jsx
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Dropdown from "react-bootstrap/Dropdown";
 import Button from "react-bootstrap/Button";
@@ -8,11 +9,27 @@ import {
     FiUser,
     FiCalendar,
     FiUserPlus,
+    FiUserCheck,
     FiCheck,
     FiX,
     FiHelpCircle,
     FiCheckCircle,
+    FiXCircle,
+    FiEdit2,
+    FiTrash2,
+    FiLogOut,
+    FiThumbsUp,
+    FiThumbsDown,
+    FiClock,
+    FiChevronDown,
+    FiChevronUp,
 } from "react-icons/fi";
+
+// How many notifications the dropdown shows by default. Anything beyond
+// is hidden behind a "Show all (N)" footer button that expands inline —
+// no separate page, no extra request (we already have the full list
+// from useNotifications).
+const DEFAULT_VISIBLE = 5;
 
 import { useNotifications } from "../hooks/useNotifications.jsx";
 
@@ -33,6 +50,90 @@ const fetchWithRetry = async (url, opts = {}) => {
         }
     }
 };
+
+// =====================================================
+// TYPE-CENTRIC METADATA
+// Centralises every per-type concern (avatar tint, icon, where to
+// navigate, what action buttons to offer). Adding a new notification
+// type → add one entry here and one branch in renderMessage. Nothing
+// else in the bell needs to change.
+// =====================================================
+const TYPE_META = {
+    friend_request: {
+        avatarClass: "friend",
+        icon: <FiUser size={18} />,
+        // Click → profile of the person who sent the request. Fallback
+        // to the friends list page if for some reason the payload is
+        // missing from_user_id (defensive).
+        navigateTo: (p) => p.from_user_id ? `/friends/${p.from_user_id}` : "/friends",
+    },
+    friend_accepted: {
+        avatarClass: "friend",
+        icon: <FiUserCheck size={18} />,
+        // Click → profile of the new friend (the addressee who accepted).
+        navigateTo: (p) => p.from_user_id ? `/friends/${p.from_user_id}` : "/friends",
+    },
+    event_invite: {
+        avatarClass: "event",
+        icon: <FiCalendar size={18} />,
+        navigateTo: () => "/events",
+    },
+    event_public: {
+        avatarClass: "event",
+        icon: <FiCalendar size={18} />,
+        navigateTo: () => "/events",
+    },
+    event_updated: {
+        avatarClass: "event-warn",
+        icon: <FiEdit2 size={18} />,
+        navigateTo: (p) => p.event_id ? `/map?event=${p.event_id}` : "/events",
+    },
+    event_cancelled: {
+        avatarClass: "event-danger",
+        icon: <FiTrash2 size={18} />,
+        navigateTo: () => "/events",
+    },
+    event_removed: {
+        avatarClass: "event-danger",
+        icon: <FiLogOut size={18} />,
+        navigateTo: () => "/events",
+    },
+    rsvp_changed: {
+        avatarClass: "rsvp",
+        icon: <FiCheckCircle size={18} />,
+        navigateTo: (p) => p.event_id ? `/map?event=${p.event_id}` : "/events",
+    },
+    invite_suggestion: {
+        avatarClass: "suggestion",
+        icon: <FiUserPlus size={18} />,
+        // Click → profile of the user being suggested, so the creator can
+        // see who they're about to invite before approving/refusing.
+        navigateTo: (p) => p.suggested_user_id ? `/friends/${p.suggested_user_id}` : "/events",
+    },
+    suggestion_approved: {
+        avatarClass: "rsvp",
+        icon: <FiThumbsUp size={18} />,
+        navigateTo: () => "/events",
+    },
+    suggestion_refused: {
+        avatarClass: "event-danger",
+        icon: <FiThumbsDown size={18} />,
+        navigateTo: () => "/events",
+    },
+    event_reminder: {
+        avatarClass: "reminder",
+        icon: <FiClock size={18} />,
+        navigateTo: (p) => p.event_id ? `/map?event=${p.event_id}` : "/events",
+    },
+};
+
+const DEFAULT_META = {
+    avatarClass: "event",
+    icon: <FiBell size={18} />,
+    navigateTo: () => null,
+};
+
+const metaFor = (n) => TYPE_META[n?.type] || DEFAULT_META;
 
 // =====================================================
 // STYLES (dark, coherent avec Navbar / EventModal)
@@ -92,9 +193,13 @@ const BELL_CSS = `
   display: flex; align-items: center; justify-content: center;
   border: 1px solid #262a36;
 }
-.sq-bell-avatar.friend     { background: linear-gradient(135deg, #ec4899, #f97316); color: #fff; }
-.sq-bell-avatar.event      { background: linear-gradient(135deg, #6366f1, #ec4899); color: #fff; }
-.sq-bell-avatar.suggestion { background: linear-gradient(135deg, #facc15, #f97316); color: #fff; }
+.sq-bell-avatar.friend       { background: linear-gradient(135deg, #ec4899, #f97316); color: #fff; }
+.sq-bell-avatar.event        { background: linear-gradient(135deg, #6366f1, #ec4899); color: #fff; }
+.sq-bell-avatar.event-warn   { background: linear-gradient(135deg, #facc15, #f97316); color: #161922; }
+.sq-bell-avatar.event-danger { background: linear-gradient(135deg, #ef4444, #b91c1c); color: #fff; }
+.sq-bell-avatar.suggestion   { background: linear-gradient(135deg, #facc15, #f97316); color: #fff; }
+.sq-bell-avatar.rsvp         { background: linear-gradient(135deg, #22d3ee, #4f46e5); color: #fff; }
+.sq-bell-avatar.reminder     { background: linear-gradient(135deg, #6366f1, #22d3ee); color: #fff; }
 
 .sq-bell-body { flex: 1; min-width: 0; }
 .sq-bell-row1 {
@@ -136,53 +241,159 @@ const BELL_CSS = `
   margin-left: auto;
 }
 .sq-bell-close:hover { color: #ff8a8a !important; }
+
+/* Footer at the bottom of the dropdown — toggles between showing the
+   first DEFAULT_VISIBLE notifications and the full list. Sticky so it
+   stays reachable even after the user scrolls through the expanded
+   list inside the dropdown's own max-height. */
+.sq-bell-footer {
+  position: sticky;
+  bottom: 0;
+  background: #161922;
+  border-top: 1px solid #262a36;
+  padding: 0.5rem 0.6rem;
+  display: flex;
+  justify-content: center;
+  z-index: 2;
+}
+.sq-bell-footer-btn {
+  background: transparent !important;
+  border: 1px solid #262a36 !important;
+  color: #adb5bd !important;
+  font-size: 0.78rem !important;
+  font-weight: 600;
+  padding: 0.3rem 0.85rem !important;
+  border-radius: 999px !important;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  justify-content: center;
+}
+.sq-bell-footer-btn:hover {
+  color: #fff !important;
+  border-color: #6366f1 !important;
+  background: rgba(99,102,241,0.1) !important;
+}
+.sq-bell-footer-btn:focus { box-shadow: none !important; }
 `;
 
 // =====================================================
-// HELPERS
+// MESSAGE RENDERING — one branch per notification type.
+// Keep the copy short; the bell row is narrow.
 // =====================================================
 const renderMessage = (n) => {
     const p = n.payload || {};
-    const from = p.from_email || "Someone";
+    const from   = p.from_email          || "Someone";
+    const title  = p.event_title         || "an event";
+    const target = p.suggested_user_email || p.responder_email || "someone";
 
-    if (n.type === "friend_request") {
-        return (<><strong>{from}</strong> sent you a friend request</>);
+    switch (n.type) {
+        case "friend_request": {
+            // Backend stamps payload.status when the addressee acts on
+            // the request, so the row stays in the bell but updates its
+            // wording to reflect the outcome. No status → still pending.
+            const status = p.status;
+            if (status === "accepted") {
+                return (<><strong>{from}</strong> is now your friend</>);
+            }
+            if (status === "refused") {
+                return (<>You refused <strong>{from}</strong>'s friend request</>);
+            }
+            return (<><strong>{from}</strong> sent you a friend request</>);
+        }
+
+        case "friend_accepted":
+            return (<><strong>{from}</strong> accepted your friend request</>);
+
+        case "event_invite": {
+            const when = [p.event_date, p.event_time].filter(Boolean).join(" ");
+            return (
+                <>
+                    <strong>{from}</strong> invited you to "<strong>{title}</strong>"
+                    {when ? ` on ${when}` : ""}
+                </>
+            );
+        }
+
+        case "event_public": {
+            const when = [p.event_date, p.event_time].filter(Boolean).join(" ");
+            return (
+                <>
+                    <strong>{from}</strong> created a public event "<strong>{title}</strong>"
+                    {when ? ` on ${when}` : ""}
+                </>
+            );
+        }
+
+        case "event_updated": {
+            const when = [p.event_date, p.event_time].filter(Boolean).join(" ");
+            return (
+                <>
+                    <strong>{from}</strong> updated "<strong>{title}</strong>"
+                    {when ? ` — now ${when}` : ""}
+                </>
+            );
+        }
+
+        case "event_cancelled":
+            return (<><strong>{from}</strong> cancelled "<strong>{title}</strong>"</>);
+
+        case "event_removed":
+            return (<><strong>{from}</strong> removed you from "<strong>{title}</strong>"</>);
+
+        case "rsvp_changed": {
+            const r = p.response;
+            const verb = r === "going"     ? "is going to"
+                       : r === "maybe"     ? "might go to"
+                       : r === "not_going" ? "is not going to"
+                       : "responded to";
+            return (
+                <>
+                    <strong>{target}</strong> {verb} "<strong>{title}</strong>"
+                </>
+            );
+        }
+
+        case "invite_suggestion":
+            return (
+                <>
+                    <strong>{from}</strong> suggests inviting <strong>{target}</strong>{" "}
+                    to "<strong>{title}</strong>"
+                </>
+            );
+
+        case "suggestion_approved":
+            return (
+                <>
+                    <strong>{from}</strong> approved your suggestion to invite{" "}
+                    <strong>{target}</strong> to "<strong>{title}</strong>"
+                </>
+            );
+
+        case "suggestion_refused":
+            return (
+                <>
+                    <strong>{from}</strong> refused your suggestion to invite{" "}
+                    <strong>{target}</strong> to "<strong>{title}</strong>"
+                </>
+            );
+
+        case "event_reminder": {
+            const h = p.hours_until;
+            const when = (typeof h === "number")
+                ? (h <= 0 ? "is starting now" : h === 1 ? "starts in 1 hour" : `starts in ${h} hours`)
+                : "is coming up";
+            return (
+                <>
+                    Reminder: "<strong>{title}</strong>" {when}
+                </>
+            );
+        }
+
+        default:
+            return "You have a new notification";
     }
-
-    if (n.type === "event_invite") {
-        const title = p.event_title || "an event";
-        const when = [p.event_date, p.event_time].filter(Boolean).join(" ");
-        return (
-            <>
-                <strong>{from}</strong> invited you to "<strong>{title}</strong>"
-                {when ? ` on ${when}` : ""}
-            </>
-        );
-    }
-
-    if (n.type === "event_public") {
-        const title = p.event_title || "a public event";
-        const when = [p.event_date, p.event_time].filter(Boolean).join(" ");
-        return (
-            <>
-                <strong>{from}</strong> created a public event "<strong>{title}</strong>"
-                {when ? ` on ${when}` : ""}
-            </>
-        );
-    }
-
-    if (n.type === "invite_suggestion") {
-        const title = p.event_title || "your event";
-        const target = p.suggested_user_email || "someone";
-        return (
-            <>
-                <strong>{from}</strong> suggests inviting <strong>{target}</strong>{" "}
-                to "<strong>{title}</strong>"
-            </>
-        );
-    }
-
-    return "You have a new notification";
 };
 
 const formatTimeAgo = (iso) => {
@@ -210,7 +421,17 @@ export const NotificationBell = () => {
         fetchNotifications,
     } = useNotifications({ poll: true });
 
+    // Show-all toggle for the footer "Show all (N) / Show less" button.
+    // Local UI state only — survives across polls so the user's choice
+    // doesn't get reset every time useNotifications refetches.
+    const [showAll, setShowAll] = useState(false);
+
     // ----- friend_request -----
+    // Action handlers MARK the notif as read (not delete) so the user can
+    // still scroll back and see "I accepted X's request yesterday". The
+    // notification only goes away when the user explicitly clicks the X.
+    // The backend mirrors this with _mark_*_read helpers — without that
+    // mirror, a re-fetch would resurrect an unread state we just cleared.
     const acceptFriend = async (n) => {
         const fid = (n.payload || {}).friendship_id;
         if (!fid) return;
@@ -218,7 +439,7 @@ export const NotificationBell = () => {
             `${API_URL}/api/friends/requests/${fid}/accept`,
             { method: "PUT", headers: authHeaders() }
         );
-        if (res.ok) { deleteNotification(n.id); fetchNotifications(); }
+        if (res.ok) { markAsRead(n.id); fetchNotifications(); }
     };
 
     const refuseFriend = async (n) => {
@@ -228,10 +449,10 @@ export const NotificationBell = () => {
             `${API_URL}/api/friends/requests/${fid}/refuse`,
             { method: "PUT", headers: authHeaders() }
         );
-        if (res.ok) { deleteNotification(n.id); fetchNotifications(); }
+        if (res.ok) { markAsRead(n.id); fetchNotifications(); }
     };
 
-    // ----- event_invite (3 buttons via /respond) -----
+    // ----- event_invite / event_public (3 buttons via /respond) -----
     const respondEvent = async (n, response) => {
         const eid = (n.payload || {}).event_id;
         if (!eid) return;
@@ -243,7 +464,7 @@ export const NotificationBell = () => {
                 body: JSON.stringify({ response }),
             }
         );
-        if (res.ok) { deleteNotification(n.id); fetchNotifications(); }
+        if (res.ok) { markAsRead(n.id); fetchNotifications(); }
     };
 
     // ----- invite_suggestion (creator-only actions) -----
@@ -254,7 +475,7 @@ export const NotificationBell = () => {
             `${API_URL}/api/events/${p.event_id}/suggestions/${p.suggestion_id}/approve`,
             { method: "PUT", headers: authHeaders() }
         );
-        if (res.ok) { deleteNotification(n.id); fetchNotifications(); }
+        if (res.ok) { markAsRead(n.id); fetchNotifications(); }
     };
 
     const refuseSuggestion = async (n) => {
@@ -264,25 +485,14 @@ export const NotificationBell = () => {
             `${API_URL}/api/events/${p.event_id}/suggestions/${p.suggestion_id}/refuse`,
             { method: "PUT", headers: authHeaders() }
         );
-        if (res.ok) { deleteNotification(n.id); fetchNotifications(); }
+        if (res.ok) { markAsRead(n.id); fetchNotifications(); }
     };
 
+    // Click anywhere on the row → mark read + navigate (per-type target).
     const handleClickNotif = (n) => {
         if (!n.is_read) markAsRead(n.id);
-        if (n.type === "event_invite" || n.type === "event_public" || n.type === "invite_suggestion") navigate("/events");
-        else if (n.type === "friend_request") navigate("/friends");
-    };
-
-    const avatarKindFor = (n) => {
-        if (n.type === "friend_request") return "friend";
-        if (n.type === "invite_suggestion") return "suggestion";
-        return "event";
-    };
-
-    const iconFor = (n) => {
-        if (n.type === "friend_request") return <FiUser size={18} />;
-        if (n.type === "invite_suggestion") return <FiUserPlus size={18} />;
-        return <FiCalendar size={18} />;
+        const path = metaFor(n).navigateTo(n.payload || {});
+        if (path) navigate(path);
     };
 
     return (
@@ -324,9 +534,18 @@ export const NotificationBell = () => {
                     {(notifications || []).length === 0 ? (
                         <div className="sq-bell-empty">You have no notifications</div>
                     ) : (
-                        (notifications || []).slice(0, 5).map((n) => {
-                            const isFriend     = n.type === "friend_request";
-                            const isEvent      = n.type === "event_invite" || n.type === "event_public";
+                        // Collapsed by default to DEFAULT_VISIBLE, expanded to
+                        // the full list when the user clicks the footer button.
+                        ((showAll ? (notifications || []) : (notifications || []).slice(0, DEFAULT_VISIBLE))).map((n) => {
+                            const meta = metaFor(n);
+                            // A friend_request notif with payload.status set has
+                            // already been accepted/refused — no more buttons,
+                            // just the updated label rendered by renderMessage.
+                            const friendReqStatus = n.type === "friend_request"
+                                ? (n.payload || {}).status
+                                : null;
+                            const isFriendReq  = n.type === "friend_request" && !friendReqStatus;
+                            const isEventInv   = n.type === "event_invite" || n.type === "event_public";
                             const isSuggestion = n.type === "invite_suggestion";
 
                             return (
@@ -335,8 +554,8 @@ export const NotificationBell = () => {
                                     className={`sq-bell-item ${n.is_read ? "" : "unread"}`}
                                     onClick={() => handleClickNotif(n)}
                                 >
-                                    <div className={`sq-bell-avatar ${avatarKindFor(n)}`}>
-                                        {iconFor(n)}
+                                    <div className={`sq-bell-avatar ${meta.avatarClass}`}>
+                                        {meta.icon}
                                     </div>
 
                                     <div className="sq-bell-body">
@@ -346,7 +565,7 @@ export const NotificationBell = () => {
                                         </div>
 
                                         <div className="sq-bell-actions">
-                                            {isFriend && (
+                                            {isFriendReq && (
                                                 <>
                                                     <Button size="sm" className="sq-bell-btn accept"
                                                         onClick={(e) => { e.stopPropagation(); acceptFriend(n); }}>
@@ -359,7 +578,7 @@ export const NotificationBell = () => {
                                                 </>
                                             )}
 
-                                            {isEvent && (
+                                            {isEventInv && (
                                                 <>
                                                     <Button size="sm" className="sq-bell-btn going"
                                                         onClick={(e) => { e.stopPropagation(); respondEvent(n, "going"); }}
@@ -374,7 +593,7 @@ export const NotificationBell = () => {
                                                     <Button size="sm" className="sq-bell-btn refuse"
                                                         onClick={(e) => { e.stopPropagation(); respondEvent(n, "not_going"); }}
                                                         title="Not going">
-                                                        <FiX /> Not going
+                                                        <FiXCircle /> Not going
                                                     </Button>
                                                 </>
                                             )}
@@ -408,6 +627,23 @@ export const NotificationBell = () => {
                                 </div>
                             );
                         })
+                    )}
+
+                    {/* Show all / Show less footer — only rendered when the
+                        user actually has more than DEFAULT_VISIBLE notifs.
+                        Sticky bottom inside the dropdown's scroll area so
+                        the user can collapse without scrolling back up. */}
+                    {(notifications || []).length > DEFAULT_VISIBLE && (
+                        <div className="sq-bell-footer">
+                            <Button
+                                className="sq-bell-footer-btn"
+                                onClick={(e) => { e.stopPropagation(); setShowAll((v) => !v); }}
+                            >
+                                {showAll
+                                    ? (<><FiChevronUp /> Show less</>)
+                                    : (<><FiChevronDown /> Show all ({(notifications || []).length})</>)}
+                            </Button>
+                        </div>
                     )}
                 </Dropdown.Menu>
             </Dropdown>

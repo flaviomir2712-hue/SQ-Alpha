@@ -82,9 +82,47 @@ const UserInteractionWatcher = ({ isProgRef, onUserInteract }) => {
   return null;
 };
 
+// Predicate: does this event pass the current status filter?
+//
+// "all"        → legacy behaviour: hide pending invitations.
+// "pending"    → show ONLY pending invitations (inverts the legacy hide).
+// "created"    → only events I created.
+// "going" / "maybe" / "not_going" → match against my_rsvp.
+//
+// Implemented as a free function so the visibleEvents useMemo stays
+// declarative and easy to read.
+const matchesStatusFilter = (event, statusFilter, myId) => {
+  switch (statusFilter) {
+    case "pending":
+      return event.my_status === "pending";
+    case "created":
+      return myId != null && event.creator_id === myId;
+    case "going":
+    case "maybe":
+    case "not_going":
+      // Pending invitations don't have an rsvp yet — exclude them.
+      if (event.my_status === "pending") return false;
+      return event.my_rsvp === statusFilter;
+    case "all":
+    default:
+      return event.my_status !== "pending";
+  }
+};
+
+const matchesVisibilityFilter = (event, visibilityFilter) => {
+  switch (visibilityFilter) {
+    case "public":  return !!event.is_public;
+    case "private": return !event.is_public;
+    case "all":
+    default:        return true;
+  }
+};
+
 export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const { store } = useGlobalReducer();
-  const mapFilterDays = store?.mapFilterDays ?? null;
+  const mapFilterDays       = store?.mapFilterDays       ?? null;
+  const mapFilterVisibility = store?.mapFilterVisibility ?? "all";
+  const mapFilterStatus     = store?.mapFilterStatus     ?? "all";
 
   const [events, setEvents]         = useState([]);
   const [loading, setLoading]       = useState(true);
@@ -119,6 +157,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   }, [searchParams]);
 
   const currentUser = JSON.parse(localStorage.getItem("user") || "null");
+  const myId = currentUser?.id ?? null;
 
   const fetchEvents = async () => {
     const apiUrl = import.meta.env.VITE_BACKEND_URL;
@@ -225,17 +264,41 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
   const mapCenter = useMemo(() => computeCenter(userCenter), [userCenter]);
 
+  // Combined filter pipeline. `forceShowEventId` always wins so the deep-link
+  // ?event=<id> can never be hidden by the navbar filters.
+  // Otherwise the event must pass every dimension:
+  //   1. not in the past (unless the time filter is "Today" / value === 0,
+  //      in which case events with days === 0 are kept; older still hidden)
+  //   2. within the look-ahead window if mapFilterDays !== null
+  //   3. visibility (all / public / private)
+  //   4. status   (all / going / maybe / not_going / pending / created)
   const visibleEvents = useMemo(() => {
     return events.filter((e) => {
       if (e.id === forceShowEventId) return true;
-      if (e.my_status === "pending") return false;
+
+      // Time window — past is always hidden, future is capped by mapFilterDays.
       const days = daysUntilEvent(e);
-      if (days === null) return true;
-      if (days < 0) return false;
-      if (mapFilterDays !== null && days > mapFilterDays) return false;
+      if (days !== null) {
+        if (days < 0) return false;
+        if (mapFilterDays !== null && days > mapFilterDays) return false;
+      }
+
+      // Visibility (public / private / all)
+      if (!matchesVisibilityFilter(e, mapFilterVisibility)) return false;
+
+      // My status / RSVP / creator
+      if (!matchesStatusFilter(e, mapFilterStatus, myId)) return false;
+
       return true;
     });
-  }, [events, mapFilterDays, forceShowEventId]);
+  }, [
+    events,
+    mapFilterDays,
+    mapFilterVisibility,
+    mapFilterStatus,
+    myId,
+    forceShowEventId,
+  ]);
 
   const handleUserInteract = () => {
     if (followUserRef.current) setFollowUser(false);

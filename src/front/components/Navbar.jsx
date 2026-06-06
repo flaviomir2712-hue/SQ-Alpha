@@ -34,21 +34,45 @@ import {
     FiX,
     FiMaximize2,
     FiFilter,
+    FiGlobe,
+    FiLock,
+    FiCheckCircle,
+    FiHelpCircle,
+    FiXCircle,
+    FiUserPlus,
+    FiStar,
+    FiRotateCcw,
 } from "react-icons/fi";
 
-// Options for the map time filter (number of days). null = no filter.
-// const MAP_FILTER_OPTIONS = [
-//     { value: null, label: "Todos" },
-//     { value: 1,    label: "Hoy y mañana" },
-//     { value: 3,    label: "Próximos 3 días" },
-//     { value: 7,    label: "Próxima semana" },
-//     { value: 14,   label: "Próximas 2 semanas" },
-//     { value: 30,   label: "Próximo mes" },
-//     { value: 90,   label: "Próximos 3 meses" },
-// ];
+// =====================================================
+// MAP FILTER OPTIONS — every label is English on purpose.
+// "All" means "no restriction" on that dimension.
+// =====================================================
+const MAP_FILTER_TIME_OPTIONS = [
+    { value: null, label: "All upcoming" },
+    { value: 0,    label: "Today" },           // 0 → today only (days === 0)
+    { value: 1,    label: "Today & tomorrow" },
+    { value: 3,    label: "Next 3 days" },
+    { value: 7,    label: "Next week" },
+    { value: 14,   label: "Next 2 weeks" },
+    { value: 30,   label: "Next month" },
+    { value: 90,   label: "Next 3 months" },
+];
 
-// const labelForFilter = (val) =>
-//     MAP_FILTER_OPTIONS.find((o) => o.value === val)?.label || "Todos";
+const MAP_FILTER_VISIBILITY_OPTIONS = [
+    { value: "all",     label: "All",     icon: <FiGlobe size={14} /> },
+    { value: "public",  label: "Public",  icon: <FiGlobe size={14} /> },
+    { value: "private", label: "Private", icon: <FiLock  size={14} /> },
+];
+
+const MAP_FILTER_STATUS_OPTIONS = [
+    { value: "all",       label: "All",           icon: <FiUsers       size={14} /> },
+    { value: "going",     label: "Going",         icon: <FiCheckCircle size={14} /> },
+    { value: "maybe",     label: "Maybe",         icon: <FiHelpCircle  size={14} /> },
+    { value: "not_going", label: "Not going",     icon: <FiXCircle     size={14} /> },
+    { value: "pending",   label: "Invited",       icon: <FiUserPlus    size={14} /> },
+    { value: "created",   label: "Created by me", icon: <FiStar        size={14} /> },
+];
 
 // =====================================================
 // LOCAL HELPERS (inlined so the navbar is self-contained)
@@ -160,6 +184,17 @@ const fileToDataURL = (fileOrBlob) =>
         reader.onerror = reject;
         reader.readAsDataURL(fileOrBlob);
     });
+
+// Active filter count — used to show a numeric badge on the funnel icon
+// so the user knows at a glance how many dimensions are constraining
+// what they see on the map.
+const countActiveFilters = (days, visibility, status) => {
+    let n = 0;
+    if (days !== null && days !== undefined) n += 1;
+    if (visibility && visibility !== "all")  n += 1;
+    if (status     && status     !== "all")  n += 1;
+    return n;
+};
 
 // =====================================================
 // STYLES (dark, coherent avec EventModal / Profile)
@@ -376,6 +411,41 @@ const NAVBAR_CSS = `
  }
  .sq-filter-toggle:hover { background: rgba(255,255,255,0.12) !important; border-color: #6366f1 !important; }
  .sq-filter-toggle:focus { box-shadow: none !important; }
+
+ /* Wider menu for the 3-section filter dropdown */
+ .sq-filter-dropdown {
+   background: #161922; border: 1px solid #262a36;
+   color: #e9ecef; min-width: 260px;
+   padding-top: 0.25rem;
+   max-height: 70vh;
+   overflow-y: auto;
+ }
+ .sq-filter-dropdown .dropdown-item { color: #e9ecef; font-size: 0.88rem; }
+ .sq-filter-dropdown .dropdown-item:hover,
+ .sq-filter-dropdown .dropdown-item:focus { background: #1e2230; color: #fff; }
+ .sq-filter-dropdown .dropdown-item.active,
+ .sq-filter-dropdown .dropdown-item:active { background: rgba(99,102,241,0.18) !important; color: #fff !important; }
+ .sq-filter-dropdown .dropdown-header {
+   color: #adb5bd;
+   text-transform: uppercase;
+   font-size: 0.7rem;
+   letter-spacing: 0.05em;
+   font-weight: 700;
+   padding-top: 0.4rem;
+ }
+ .sq-filter-dropdown .dropdown-divider { border-color: #262a36; }
+ .sq-filter-reset {
+   color: #f43f5e !important;
+   font-weight: 600;
+ }
+ .sq-filter-reset:hover { background: #2a1212 !important; color: #ff8a8a !important; }
+ .sq-filter-badge {
+   background: #6366f1 !important;
+   color: #fff !important;
+   font-size: 0.6rem !important;
+   font-weight: 700;
+   padding: 0.15rem 0.4rem !important;
+ }
 
  .sq-menu-toggle.dropdown-toggle::after { display: none; }
  .sq-menu-toggle {
@@ -742,6 +812,12 @@ export const Navbar = () => {
     const chatUnread = store.chatUnreadTotal || 0;
     const showingSearch = searchResults !== null;
 
+    // Map filter state (read from the store so navbar + Mapview stay in sync)
+    const filterDays       = store.mapFilterDays       ?? null;
+    const filterVisibility = store.mapFilterVisibility ?? "all";
+    const filterStatus     = store.mapFilterStatus     ?? "all";
+    const activeFilterCount = countActiveFilters(filterDays, filterVisibility, filterStatus);
+
     return (
         <>
             <style>{NAVBAR_CSS}</style>
@@ -756,48 +832,104 @@ export const Navbar = () => {
                             </NavbarBs.Brand>
                         </Link>
 
-                        {/* MAP TIME FILTER — small, sits right next to the logo.
-                            Only meaningful when logged in. */}
-                        {/* {isLogged && (
-                            <Dropdown align="start">
+                        {/* MAP EVENT FILTER — small funnel button next to the logo.
+                            Only meaningful when logged in. The dropdown groups three
+                            independent filter dimensions (Time / Visibility / Status).
+                            Selecting an option dispatches a single action and the
+                            map re-renders immediately. `autoClose="outside"` lets
+                            the user pick options from several sections in one go. */}
+                        {isLogged && (
+                            <Dropdown align="start" autoClose="outside">
                                 <Dropdown.Toggle
                                     as={Button}
                                     variant="dark"
                                     className="sq-filter-toggle position-relative border-0 p-1"
                                     title="Filter events on the map"
                                 >
-                                    <FiFilter size={24} color="white" />
-                                    {store.mapFilterDays !== null && store.mapFilterDays !== undefined && (
-                                        <Badge
-                                            bg="info"
-                                            pill
-                                            className="ms-1"
-                                            style={{ fontSize: "0.55rem", verticalAlign: "middle" }}
-                                        >
-                                            {store.mapFilterDays}d
+                                    <FiFilter size={20} color="white" />
+                                    {activeFilterCount > 0 && (
+                                        <Badge pill className="sq-filter-badge ms-1">
+                                            {activeFilterCount}
                                         </Badge>
                                     )}
                                 </Dropdown.Toggle>
-                                <Dropdown.Menu className="sq-menu-dropdown">
-                                    <Dropdown.Header>Event filter</Dropdown.Header>
-                                    <Dropdown.Divider />
-                                    {MAP_FILTER_OPTIONS.map((opt) => {
-                                        const isActive = (store.mapFilterDays ?? null) === opt.value;
+
+                                <Dropdown.Menu className="sq-filter-dropdown">
+                                    {/* ── TIME ── */}
+                                    <Dropdown.Header>Time</Dropdown.Header>
+                                    {MAP_FILTER_TIME_OPTIONS.map((opt) => {
+                                        const isActive = (filterDays ?? null) === opt.value;
                                         return (
                                             <Dropdown.Item
-                                                key={String(opt.value)}
+                                                key={`t-${String(opt.value)}`}
                                                 active={isActive}
                                                 onClick={() => dispatch({ type: "set_map_filter_days", payload: opt.value })}
                                             >
-                                                {isActive && <FiCheck className="me-2" />}
-                                                {!isActive && <span className="me-2" style={{ display: "inline-block", width: 14 }} />}
+                                                {isActive
+                                                    ? <FiCheck className="me-2" />
+                                                    : <span className="me-2" style={{ display: "inline-block", width: 14 }} />}
                                                 {opt.label}
                                             </Dropdown.Item>
                                         );
                                     })}
+
+                                    <Dropdown.Divider />
+
+                                    {/* ── VISIBILITY ── */}
+                                    <Dropdown.Header>Visibility</Dropdown.Header>
+                                    {MAP_FILTER_VISIBILITY_OPTIONS.map((opt) => {
+                                        const isActive = filterVisibility === opt.value;
+                                        return (
+                                            <Dropdown.Item
+                                                key={`v-${opt.value}`}
+                                                active={isActive}
+                                                onClick={() => dispatch({ type: "set_map_filter_visibility", payload: opt.value })}
+                                            >
+                                                {isActive
+                                                    ? <FiCheck className="me-2" />
+                                                    : <span className="me-2" style={{ display: "inline-block", width: 14 }} />}
+                                                <span className="me-2">{opt.icon}</span>
+                                                {opt.label}
+                                            </Dropdown.Item>
+                                        );
+                                    })}
+
+                                    <Dropdown.Divider />
+
+                                    {/* ── STATUS ── */}
+                                    <Dropdown.Header>My status</Dropdown.Header>
+                                    {MAP_FILTER_STATUS_OPTIONS.map((opt) => {
+                                        const isActive = filterStatus === opt.value;
+                                        return (
+                                            <Dropdown.Item
+                                                key={`s-${opt.value}`}
+                                                active={isActive}
+                                                onClick={() => dispatch({ type: "set_map_filter_status", payload: opt.value })}
+                                            >
+                                                {isActive
+                                                    ? <FiCheck className="me-2" />
+                                                    : <span className="me-2" style={{ display: "inline-block", width: 14 }} />}
+                                                <span className="me-2">{opt.icon}</span>
+                                                {opt.label}
+                                            </Dropdown.Item>
+                                        );
+                                    })}
+
+                                    {activeFilterCount > 0 && (
+                                        <>
+                                            <Dropdown.Divider />
+                                            <Dropdown.Item
+                                                className="sq-filter-reset"
+                                                onClick={() => dispatch({ type: "reset_map_filters" })}
+                                            >
+                                                <FiRotateCcw className="me-2" />
+                                                Reset filters
+                                            </Dropdown.Item>
+                                        </>
+                                    )}
                                 </Dropdown.Menu>
                             </Dropdown>
-                        )} */}
+                        )}
                     </div>
 
                     <Nav className="d-flex flex-row align-items-center gap-2 gap-md-3">

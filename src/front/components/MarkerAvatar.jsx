@@ -56,7 +56,7 @@ export const createMarkerAvatar = (
 
   const parts = [];
   parts.push(
-    `<div class="avatar-marker${logoClass}${letterClass}" style="width:${size}px;height:${size}px;">`
+    `<div class="avatar-marker${logoClass}${letterClass}" style="width:${'56px'}px;height:${'56px'}px;">`
   );
 
   // Tooltip (hover only — rendered first so z-index stacking is correct)
