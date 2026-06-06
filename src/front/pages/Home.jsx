@@ -1,52 +1,19 @@
-import { useState } from "react";
-
-import { Navbar } from "../components/Navbar";
 import { Mapview } from "../components/Mapview";
-import EventCard from "../components/EventCard";
-import { BottomNavbar } from "../components/ButtonNavbar";
 
+// Home is a thin wrapper that renders the fullscreen map.
+//
+// Navbar (top) and BottomNavbar (pill) are owned by Layout.jsx and
+// rendered around every page, so we MUST NOT re-mount them here —
+// doing so used to produce duplicate navbars stacked over each other.
+//
+// EventModal lifecycle (marker click → view, map click → create) is
+// owned internally by <Mapview/>, so we do not render any EventCard
+// or EventModal here either; that previously caused the modal to
+// open twice on every marker click.
 export const Home = () => {
-	const user = JSON.parse(localStorage.getItem("user"));
-
-	const [showModal, setShowModal] = useState(false);
-	const [createEventData, setCreateEventData] = useState({});
-	const [selectedEvent, setSelectedEvent] = useState(null);
-
 	return (
 		<div className="home-page">
-
-			<Navbar />
-
-			<div className="container mt-3">
-				<h4>
-					Hola {user?.email}
-				</h4>
-			</div>
-
-			<Mapview
-				setSelectedEvent={setSelectedEvent}
-				setCreateEventData={(coords) => {
-					setCreateEventData(coords);
-					setShowModal(true);
-				}}
-			/>
-
-			<EventCard
-				show={showModal}
-				handleClose={() => {
-					setShowModal(false);
-					setCreateEventData({});
-				}}
-				eventData={createEventData}
-			/>
-
-			{selectedEvent && (
-				<div>
-				</div>
-			)}
-
-			<BottomNavbar />
-
+			<Mapview />
 		</div>
 	);
 };

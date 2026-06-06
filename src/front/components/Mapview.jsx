@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
 import { useSearchParams } from "react-router-dom";
 import { Container, Spinner, Alert } from "react-bootstrap";
-import { FiCrosshair } from "react-icons/fi";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -65,17 +64,17 @@ const createUserDotIcon = () =>
   L.divIcon({
     html:
       `<div style="position:relative;width:22px;height:22px;">` +
-        `<div style="position:absolute;inset:-12px;border-radius:50%;` +
-          `background:rgba(66,133,244,0.18);` +
-          `animation:sq-user-pulse 2s ease-out infinite;` +
-          `pointer-events:none;"></div>` +
-        `<div style="position:absolute;top:50%;left:50%;` +
-          `transform:translate(-50%,-50%);` +
-          `width:16px;height:16px;` +
-          `background:#4285f4;` +
-          `border:3px solid #fff;border-radius:50%;` +
-          `box-shadow:0 2px 6px rgba(0,0,0,0.45);` +
-          `"></div>` +
+      `<div style="position:absolute;inset:-12px;border-radius:50%;` +
+      `background:rgba(66,133,244,0.18);` +
+      `animation:sq-user-pulse 2s ease-out infinite;` +
+      `pointer-events:none;"></div>` +
+      `<div style="position:absolute;top:50%;left:50%;` +
+      `transform:translate(-50%,-50%);` +
+      `width:16px;height:16px;` +
+      `background:#4285f4;` +
+      `border:3px solid #fff;border-radius:50%;` +
+      `box-shadow:0 2px 6px rgba(0,0,0,0.45);` +
+      `"></div>` +
       `</div>`,
     className: "sq-user-dot-icon",
     iconSize: [22, 22],
@@ -126,25 +125,26 @@ const matchesStatusFilter = (event, statusFilter, myId) => {
 
 const matchesVisibilityFilter = (event, visibilityFilter) => {
   switch (visibilityFilter) {
-    case "public":  return !!event.is_public;
+    case "public": return !!event.is_public;
     case "private": return !event.is_public;
     case "all":
-    default:        return true;
+    default: return true;
   }
 };
 
 export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const { store } = useGlobalReducer();
-  const mapFilterDays       = store?.mapFilterDays       ?? null;
+  const mapFilterDays = store?.mapFilterDays ?? null;
   const mapFilterVisibility = store?.mapFilterVisibility ?? "all";
-  const mapFilterStatus     = store?.mapFilterStatus     ?? "all";
+  const mapFilterStatus = store?.mapFilterStatus ?? "all";
+  const recenterMapNonce = store?.recenterMapNonce ?? 0;
 
-  const [events, setEvents]         = useState([]);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState(null);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [userCenter, setUserCenter] = useState(null);
 
-  const [modalOpen, setModalOpen]         = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const [activeEventId, setActiveEventId] = useState(null);
   const [prefillCoords, setPrefillCoords] = useState(null);
 
@@ -176,7 +176,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
   const fetchEvents = async () => {
     const apiUrl = import.meta.env.VITE_BACKEND_URL;
-    const token  = localStorage.getItem("token");
+    const token = localStorage.getItem("token");
     if (!apiUrl) {
       setError("VITE_BACKEND_URL is missing from the frontend .env");
       setLoading(false);
@@ -186,7 +186,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setError(null);
 
     let delay = 400;
-    for (;;) {
+    for (; ;) {
       try {
         const res = await fetch(`${apiUrl}/api/events`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -270,12 +270,30 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events]);
 
-  // follow effect: pan to the user on each GPS update (follow ON only)
+  // follow effect: pan to the user on each GPS update (follow ON only).
+  // Skip while a programmatic move (initial auto-center, FiHome recenter)
+  // is in flight — otherwise a concurrent panTo would interrupt the
+  // flyTo animation half-way and the recenter would visually stop short.
   useEffect(() => {
     if (!followUser || !userCenter || !mapRef.current) return;
     if (!hasAutoCenteredRef.current) return;
+    if (isProgrammaticMoveRef.current) return;
     mapRef.current.panTo(userCenter, { animate: true, duration: 0.5 });
   }, [userCenter, followUser]);
+
+  // ─────────────────────────────────────────────────────────────
+  // Listen for "recenter" requests from the pill-nav Home button.
+  // The store nonce is bumped each click; we re-run on every change
+  // and skip the initial 0 (which would otherwise auto-fire on mount).
+  // recenterOnUser is intentionally NOT in the deps — it's a stable
+  // closure over mapRef / userCenter / followUser refs+state, and the
+  // existing useEffects in this file follow the same convention.
+  // ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!recenterMapNonce) return;
+    recenterOnUser();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recenterMapNonce]);
 
   const mapCenter = useMemo(() => computeCenter(userCenter), [userCenter]);
 
@@ -320,11 +338,63 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   };
 
   const recenterOnUser = () => {
-    if (!mapRef.current || !userCenter) return;
+    if (!mapRef.current) return;
+
+    // DIAGNOSTIC LOG — confirms the function is actually invoked on
+    // each FiHome click. Safe to remove once we know the flow works.
+    console.log("[Mapview] recenter requested", {
+      hasUserCenter: !!userCenter,
+      followUser,
+    });
+
     isProgrammaticMoveRef.current = true;
     setFollowUser(true);
-    mapRef.current.flyTo(userCenter, 15, { duration: 0.8 });
-    setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
+
+    // 1) Immediate visual feedback using the cached fix (if any). The
+    //    user sees the map start moving right away instead of waiting
+    //    for getCurrentPosition to return.
+    if (userCenter) {
+      mapRef.current.flyTo(userCenter, 15, { duration: 0.8 });
+    }
+
+    // 2) Background refresh with maximumAge:0 — watchPosition can stall
+    //    on mobile (screen sleep, backgrounded tab, throttled by the
+    //    OS). A one-shot getCurrentPosition forces a fresh reading and
+    //    updates userCenter so the next pan/render targets the user's
+    //    actual current location, not a stale cache.
+    if (!navigator.geolocation) {
+      setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
+      return;
+    }
+
+    const hadCache = !!userCenter;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const next = [pos.coords.latitude, pos.coords.longitude];
+        setUserCenter(next);
+        if (mapRef.current) {
+          if (hadCache) {
+            // We already flew to the cache above. Refine to the fresh
+            // fix with a gentle panTo — re-flying would interrupt the
+            // first animation and look glitchy.
+            mapRef.current.panTo(next, { animate: true });
+          } else {
+            // No cache was available — this is our first animation.
+            mapRef.current.flyTo(next, 15, { duration: 0.8 });
+          }
+        }
+        setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
+      },
+      (err) => {
+        console.warn("[Mapview] recenter getCurrentPosition failed:", err?.message || err);
+        setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 5000,
+      }
+    );
   };
 
   const handleMapClick = (coords) => {
@@ -367,7 +437,11 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
       <div
         className="sq-map-wrapper"
-        style={{ height: "calc(100vh - 56px - 64px)", width: "100%" }}
+        style={{
+          height: "calc(100vh - 56px)",
+          marginTop: "56px",
+          width: "100%",
+        }}
       >
         <MapContainer
           center={mapCenter}
@@ -411,22 +485,6 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
             />
           ))}
         </MapContainer>
-
-        <button
-          type="button"
-          className={`sq-recenter-btn ${followUser ? "is-on" : "is-off"}`}
-          onClick={recenterOnUser}
-          disabled={!userCenter}
-          title={
-            !userCenter
-              ? "Waiting for GPS..."
-              : followUser
-              ? "Following you · Click to recenter"
-              : "Follow me again"
-          }
-        >
-          <FiCrosshair size={20} />
-        </button>
       </div>
 
       <EventModal

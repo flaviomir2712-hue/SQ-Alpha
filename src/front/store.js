@@ -107,6 +107,15 @@ export const initialStore = () => {
     // "all" keeps the legacy behaviour of hiding pending invitations from the map.
     // "pending" inverts it to show ONLY pending invitations.
     mapFilterStatus:     readStoredStatus(),
+
+    // ── Map recenter request (bump-and-listen) ────────
+    // Incremented every time the user clicks the pill-nav Home button
+    // while already on a page that shows the map (/, /map). Mapview
+    // useEffect watches this value and calls recenterOnUser() on every
+    // change, skipping the initial 0. Using a counter (rather than a
+    // boolean) means repeated clicks always re-fire even without a
+    // reset step.
+    recenterMapNonce: 0,
   };
 };
 
@@ -181,6 +190,7 @@ export default function storeReducer(store, action = {}) {
         mapFilterDays: null,
         mapFilterVisibility: "all",
         mapFilterStatus: "all",
+        recenterMapNonce: 0,
       };
 
     // ── friends ───────────────────────────────────
@@ -251,6 +261,13 @@ export default function storeReducer(store, action = {}) {
         mapFilterVisibility: "all",
         mapFilterStatus: "all",
       };
+
+    // ── Map recenter request ──────────────────────
+    // Bump-and-listen pattern: the pill-nav Home button dispatches this
+    // when the user is already on /, /map. Mapview useEffect watches
+    // the nonce and calls recenterOnUser() on every change.
+    case "request_recenter_map":
+      return { ...store, recenterMapNonce: (store.recenterMapNonce || 0) + 1 };
 
     default:
       console.warn("Unknown action type:", action.type);

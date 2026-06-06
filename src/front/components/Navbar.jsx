@@ -467,7 +467,6 @@ const NAVBAR_CSS = `
 
  @media (max-width: 575.98px) {
    .sq-navbar .navbar-brand { font-size: 1.5rem; }
-   .sq-hide-xs { display: none !important; }
  }
  `;
 
@@ -935,9 +934,7 @@ export const Navbar = () => {
                     <Nav className="d-flex flex-row align-items-center gap-2 gap-md-3">
                         {isLogged ? (
                             <>
-                                <span className="sq-hide-xs">
-                                    <NotificationBell />
-                                </span>
+                                <NotificationBell />
 
                                 <Button
                                     variant="dark"

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   Button,
   Modal,
@@ -24,6 +24,7 @@ import {
 } from "react-icons/fi";
 
 import { EventModal } from "./EventModal";
+import useGlobalReducer from "../hooks/useGlobalReducer";
 
 // =====================================================
 // INLINE API HELPERS (consistent with friends/navbar style)
@@ -64,8 +65,94 @@ const fileToBase64 = (file) =>
 
 // =====================================================
 // INLINE STYLES (dark mode, consistent with Friends page)
+// Includes the Instagram-style pill bottom-nav (glassmorphism)
 // =====================================================
 const PROFILE_CSS = `
+/* ─────────────────────────────────────────────────────
+   Bottom nav — floating pill with glassmorphism.
+   Visible on all screen sizes.
+   ───────────────────────────────────────────────────── */
+.sq-bottom-nav {
+  position: fixed;
+  left: 50%;
+  bottom: calc(1rem + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 1040;
+
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.45rem 0.55rem;
+
+  background: rgba(15, 17, 26, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55),
+              inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+          backdrop-filter: blur(20px) saturate(180%);
+}
+
+.sq-bottom-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 44px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.62);
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, transform 0.15s ease;
+}
+.sq-bottom-nav-item:hover { color: rgba(255, 255, 255, 0.95); }
+.sq-bottom-nav-item:active { transform: scale(0.93); }
+.sq-bottom-nav-item.active {
+  background: rgba(255, 255, 255, 0.10);
+  color: #fff;
+}
+
+/* Centre CTA: "+ Quest" with gradient */
+.sq-bottom-nav-create {
+  background: linear-gradient(135deg, #6366f1, #ec4899);
+  color: #fff;
+  width: 50px;
+  height: 50px;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.45);
+}
+.sq-bottom-nav-create:hover {
+  background: linear-gradient(135deg, #4f46e5, #db2777);
+  color: #fff;
+}
+
+/* Red dot indicator for unread notifs */
+.sq-bottom-nav-dot {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 2px solid #0f111a;
+  animation: sq-bottom-dot-pulse 2s ease-in-out infinite;
+}
+@keyframes sq-bottom-dot-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  50%      { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+}
+
+/* Hide when any Bootstrap modal is open */
+body.modal-open .sq-bottom-nav { display: none; }
+
+
+/* ─────────────────────────────────────────────────────
+   Profile modal
+   ───────────────────────────────────────────────────── */
 .profile-modal .modal-content {
   background: #161922;
   color: #e9ecef;
@@ -151,10 +238,6 @@ const PROFILE_CSS = `
   color: #6c757d;
   background: #0f111a;
 }
-
-/* Hide the bottom navbar while any Bootstrap modal is open so the
-   modal footer (Save / Close buttons) is never covered. */
-body.modal-open .bottom-navbar { display: none; }
 `;
 
 // =====================================================
@@ -178,6 +261,17 @@ const levelColor = (level) => {
 // MAIN
 // =====================================================
 export const BottomNavbar = () => {
+  const location = useLocation();
+  const { store } = useGlobalReducer();
+
+  const isLogged = !!localStorage.getItem("token");
+  const notifUnread = store.unreadNotifsCount || 0;
+
+  const isActive = (path) => {
+    if (path === "/") return location.pathname === "/";
+    return location.pathname.startsWith(path);
+  };
+
   const [showProfile, setShowProfile] = useState(false);
   const [showQuest, setShowQuest] = useState(false);
 
@@ -332,43 +426,64 @@ export const BottomNavbar = () => {
   // =====================================================
   const stats = profile?.stats;
 
+  if (!isLogged) return null;
+
   return (
     <>
       <style>{PROFILE_CSS}</style>
 
-      {/* NAVBAR */}
-      <div className="bottom-navbar">
-        <Link to="/" className="bottom-item text-decoration-none text-reset">
-          <FiHome />
-          <span>home</span>
+      {/* ============================================
+          PILL NAV — Instagram-like glassmorphism, always visible
+      ============================================ */}
+      <nav className="sq-bottom-nav" role="navigation" aria-label="Bottom menu">
+        <Link
+          to="/"
+          className={`sq-bottom-nav-item ${isActive("/") ? "active" : ""}`}
+          title="Home"
+          aria-label="Home"
+        >
+          <FiHome size={22} />
         </Link>
 
-        <Link to="/messages" className="bottom-item text-decoration-none text-reset">
-          <FiMessageSquare />
-          <span>chatroom</span>
+        <Link
+          to="/messages"
+          className={`sq-bottom-nav-item ${isActive("/messages") ? "active" : ""}`}
+          title="Chatroom"
+          aria-label="Chatroom"
+        >
+          <FiMessageSquare size={22} />
         </Link>
 
         <button
-          className="bottom-item border-0 bg-transparent"
+          type="button"
+          className="sq-bottom-nav-item sq-bottom-nav-create"
           onClick={() => setShowQuest(true)}
+          title="Create quest"
+          aria-label="Create quest"
         >
-          <FiPlus />
-          <span>quest</span>
+          <FiPlus size={26} />
         </button>
 
-        <Link to="/events" className="bottom-item text-decoration-none text-reset">
-          <FiCalendar />
-          <span>events</span>
+        <Link
+          to="/events"
+          className={`sq-bottom-nav-item ${isActive("/events") ? "active" : ""}`}
+          title="Events"
+          aria-label="Events"
+        >
+          <FiCalendar size={22} />
         </Link>
 
         <button
-          className="bottom-item border-0 bg-transparent"
+          type="button"
+          className="sq-bottom-nav-item"
           onClick={() => setShowProfile(true)}
+          title="Profile"
+          aria-label="Profile"
         >
-          <FiUser />
-          <span>profile</span>
+          <FiUser size={22} />
+          {notifUnread > 0 && <span className="sq-bottom-nav-dot" aria-hidden="true" />}
         </button>
-      </div>
+      </nav>
 
       {/* =====================================================
           PROFILE MODAL

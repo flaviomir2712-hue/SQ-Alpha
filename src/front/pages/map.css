@@ -28,7 +28,7 @@
 .avatar-marker {
   position: relative;
   border-radius: 50%;
-  overflow: visible;          /* allow pill + tooltip to escape the circle */
+  overflow: visible; /* allow pill + tooltip to escape the circle */
   cursor: pointer;
   /* dark background so the logo reads on any tile colour */
   background: #0b0d12;
@@ -97,7 +97,7 @@
 
 /* speech-bubble arrow */
 .avatar-marker-tip::after {
-  content: '';
+  content: "";
   position: absolute;
   top: 100%;
   left: 50%;
@@ -106,7 +106,7 @@
   border-top-color: #262a36;
 }
 .avatar-marker-tip::before {
-  content: '';
+  content: "";
   position: absolute;
   top: 100%;
   left: 50%;
@@ -128,45 +128,23 @@
   }
 }
 /* ── User location dot ── */
-.sq-user-dot-icon { background: transparent !important; border: 0 !important; }
+.sq-user-dot-icon {
+  background: transparent !important;
+  border: 0 !important;
+}
 @keyframes sq-user-pulse {
-  0%   { transform: scale(0.8); opacity: 0.8; }
-  70%  { transform: scale(1.6); opacity: 0;   }
-  100% { transform: scale(1.6); opacity: 0;   }
-}
-
-/* ── Recenter / follow-me button ── */
-.sq-recenter-btn {
-  position: absolute;
-  bottom: 20px;
-  right: 16px;
-  z-index: 500;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid #d0d4dc;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease,
-              background 0.18s ease, color 0.18s ease,
-              border-color 0.18s ease;
-}
-/* Follow OFF → white background, blue icon (call to action) */
-.sq-recenter-btn.is-off { background: #fff; color: #4285f4; }
-/* Follow ON → solid blue, white icon (active state) */
-.sq-recenter-btn.is-on { background: #4285f4; color: #fff; border-color: #4285f4; }
-.sq-recenter-btn:hover {
-  transform: scale(1.06);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-}
-.sq-recenter-btn:active { transform: scale(0.95); }
-.sq-recenter-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none !important;
+  0% {
+    transform: scale(0.8);
+    opacity: 0.8;
+  }
+  70% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
 }
 
 /* ── Initial-letter marker fallback (no image, no creator photo) ── */

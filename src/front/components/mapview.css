@@ -15,7 +15,6 @@
      - .leaflet-container       — Leaflet default canvas
      - .sq-user-dot-icon        — neutralise Leaflet wrapper for the user dot
      - @keyframes sq-user-pulse — the "you are here" pulsing ring
-     - .sq-recenter-btn         — recenter / follow-me button
    ──────────────────────────────────────────────────────────────────── */
 
 .map-page {
@@ -53,31 +52,8 @@
   100% { transform: scale(1.6); opacity: 0;   }
 }
 
-/* ── Recenter / follow-me button ── */
-.sq-recenter-btn {
-  position: absolute;
-  bottom: 20px;
-  right: 16px;
-  z-index: 500;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 1px solid #d0d4dc;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease,
-              background 0.18s ease, color 0.18s ease,
-              border-color 0.18s ease;
-}
-.sq-recenter-btn.is-off { background: #fff;     color: #4285f4; }
-.sq-recenter-btn.is-on  { background: #4285f4;  color: #fff; border-color: #4285f4; }
-.sq-recenter-btn:hover  { transform: scale(1.06); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
-.sq-recenter-btn:active { transform: scale(0.95); }
-.sq-recenter-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none !important;
-}
+/* Note: the old .sq-recenter-btn floating button has been removed.
+   Its functionality is now triggered by the pill-nav FiHome button
+   (ButtonNavbar.jsx) when the user is already on a map page (/, /map).
+   The bump-and-listen wiring lives in store.js (recenterMapNonce) and
+   Mapview.jsx (useEffect on the nonce calls recenterOnUser()). */
