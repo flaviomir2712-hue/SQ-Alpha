@@ -25,15 +25,30 @@ import {
 
 import { EventModal } from "./EventModal";
 import useGlobalReducer from "../hooks/useGlobalReducer";
+// Tanda 7D — señal de sesión basada en el user persistido (el JWT vive
+// en una cookie httpOnly).
+import { isLoggedIn } from "../services/auth";
+// Tanda 7F2 — aviso local "los eventos cambiaron" para que Mapview
+// refetchee al crear desde el "+" del pill.
+import { announceEventsChanged } from "../services/socket";
+
+// Tanda 7A — Swap con el Navbar: el acceso a "My Profile" se movió al
+// hamburger menu del Navbar y el pill de aquí abajo pasa a llevar a
+// /friends. El modal de perfil SIGUE viviendo en este componente
+// (siempre montado via Layout); el Navbar lo abre disparando este
+// evento custom — mismo patrón que SHOW_ONBOARDING_EVENT en
+// Onboarding.jsx.
+export const SHOW_PROFILE_EVENT = "sq:show-profile";
 
 // =====================================================
 // INLINE API HELPERS (consistent with friends/navbar style)
 // =====================================================
 const API = import.meta.env.VITE_BACKEND_URL;
 
+// Tanda 7D — la autenticación viaja en la cookie httpOnly + X-CSRF-TOKEN,
+// añadidos por el parche global de fetch (services/auth.js).
 const authHeaders = () => ({
   "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
 });
 
 const handle = async (res) => {
@@ -129,21 +144,24 @@ const PROFILE_CSS = `
   color: #fff;
 }
 
-/* Red dot indicator for unread notifs */
-.sq-bottom-nav-dot {
+/* Red counter badge for unread chat messages on the Chatroom pill —
+   mismo rol que el Badge bg="danger" del botón de mail del Navbar,
+   adaptado al estilo glassmorphism de la pill. */
+.sq-bottom-nav-badge {
   position: absolute;
-  top: 6px;
-  right: 10px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+  top: 2px;
+  right: 8px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
   background: #ef4444;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
   border: 2px solid #0f111a;
-  animation: sq-bottom-dot-pulse 2s ease-in-out infinite;
-}
-@keyframes sq-bottom-dot-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
-  50%      { box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
 }
 
 /* Hide when any Bootstrap modal is open */
@@ -249,6 +267,23 @@ body.modal-open .sq-bottom-nav { display: none; }
 .activity-bar .progress { background: #0f111a; height: 14px; border-radius: 10px; }
 .activity-bar .progress-bar { background: linear-gradient(90deg, #6366f1, #ec4899); }
 
+/* Tanda 7C — Reward por actividad: el aro del avatar cambia de color con
+   el nivel. Misma paleta que el Badge del activity bar (levelColor):
+   secondary → gris, info → cian, success → verde. Lo ven el propio
+   usuario (aquí) y sus amigos (Friends / FriendProfile). */
+.profile-avatar.level-low    { border-color: #6c757d; }
+.profile-avatar.level-active { border-color: #22d3ee; box-shadow: 0 0 12px rgba(34, 211, 238, 0.35); }
+.profile-avatar.level-very   { border-color: #22c55e; box-shadow: 0 0 14px rgba(34, 197, 94, 0.45); }
+
+/* Puntos de la leyenda de rewards bajo la activity bar */
+.reward-dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 0.3rem;
+}
+.reward-dot.low  { background: #6c757d; }
+.reward-dot.mid  { background: #22d3ee; }
+.reward-dot.high { background: #22c55e; }
+
 /* @username title shown above the email in the profile header */
 .profile-username {
   font-size: 1.25rem;
@@ -293,6 +328,14 @@ const levelColor = (level) => {
   return "secondary";
 };
 
+// Tanda 7C — clase CSS del aro-reward del avatar según nivel de actividad.
+// Mapea 1:1 con los strings que devuelve el backend (_compute_stats).
+const levelRingClass = (level) => {
+  if (level === "Very active") return "level-very";
+  if (level === "Active") return "level-active";
+  return "level-low";
+};
+
 // =====================================================
 // MAIN
 // =====================================================
@@ -300,8 +343,12 @@ export const BottomNavbar = () => {
   const location = useLocation();
   const { store } = useGlobalReducer();
 
-  const isLogged = !!localStorage.getItem("token");
-  const notifUnread = store.unreadNotifsCount || 0;
+  // Tanda 7D — señal de sesión = user persistido (el JWT vive en una
+  // cookie httpOnly que JS no puede leer).
+  const isLogged = isLoggedIn();
+  // Total de mensajes de chat no leídos — lo mantiene fresco el poll de
+  // /chat/rooms del Navbar (cada 15s), ambos montados juntos en Layout.
+  const chatUnread = store.chatUnreadTotal || 0;
 
   const isActive = (path) => {
     if (path === "/") return location.pathname === "/";
@@ -310,6 +357,15 @@ export const BottomNavbar = () => {
 
   const [showProfile, setShowProfile] = useState(false);
   const [showQuest, setShowQuest] = useState(false);
+
+  // Tanda 7A — El Navbar (menú hamburguesa → "My Profile") abre el modal
+  // de perfil disparando SHOW_PROFILE_EVENT. Mismo patrón listen-and-open
+  // que usa Onboarding.jsx con su propio evento.
+  useEffect(() => {
+    const open = () => setShowProfile(true);
+    window.addEventListener(SHOW_PROFILE_EVENT, open);
+    return () => window.removeEventListener(SHOW_PROFILE_EVENT, open);
+  }, []);
 
   // PROFILE STATE (real, from backend)
   const [profile, setProfile] = useState(null);
@@ -374,10 +430,13 @@ export const BottomNavbar = () => {
     if (!file) return;
     // No hard size cap — compressImage reduces even a 25 MB iPhone shot to
     // ~250 KB. The browser's FileReader handles the original easily.
+    // Tanda 7V — compressAndUpload sube el resultado a Cloudinary y
+    // devuelve la URL hosteada (con fallback automático a base64 si la
+    // subida falla): en la base se guarda la URL, no megas de base64.
     try {
-      const { compressImage } = await import("../utils/uploadImage");
-      const dataUrl = await compressImage(file, "profile");
-      setProfile((p) => ({ ...p, profile_picture_url: dataUrl }));
+      const { compressAndUpload } = await import("../utils/uploadImage");
+      const url = await compressAndUpload(file, "profile");
+      setProfile((p) => ({ ...p, profile_picture_url: url }));
     } catch (err) {
       console.error("Image compression failed, falling back to raw base64:", err);
       try {
@@ -485,9 +544,17 @@ export const BottomNavbar = () => {
           to="/messages"
           className={`sq-bottom-nav-item ${isActive("/messages") ? "active" : ""}`}
           title="Chatroom"
-          aria-label="Chatroom"
+          aria-label={`Chatroom${chatUnread > 0 ? ` (${chatUnread} unread)` : ""}`}
         >
           <FiMessageSquare size={22} />
+          {/* Contador rojo de mensajes no leídos — espejo del badge del
+              botón de mail del Navbar, alimentado por el mismo
+              store.chatUnreadTotal. */}
+          {chatUnread > 0 && (
+            <span className="sq-bottom-nav-badge" aria-hidden="true">
+              {chatUnread > 99 ? "99+" : chatUnread}
+            </span>
+          )}
         </Link>
 
         <button
@@ -509,16 +576,17 @@ export const BottomNavbar = () => {
           <FiCalendar size={22} />
         </Link>
 
-        <button
-          type="button"
-          className="sq-bottom-nav-item"
-          onClick={() => setShowProfile(true)}
-          title="Profile"
-          aria-label="Profile"
+        {/* Tanda 7A — Friends ocupa el sitio del antiguo botón de perfil.
+            El punto rojo de notificaciones que vivía aquí desaparece: la
+            campana del Navbar (NotificationBell) ya muestra ese contador. */}
+        <Link
+          to="/friends"
+          className={`sq-bottom-nav-item ${isActive("/friends") ? "active" : ""}`}
+          title="Friends"
+          aria-label="Friends"
         >
-          <FiUser size={22} />
-          {notifUnread > 0 && <span className="sq-bottom-nav-dot" aria-hidden="true" />}
-        </button>
+          <FiUsers size={22} />
+        </Link>
       </nav>
 
       {/* =====================================================
@@ -552,17 +620,18 @@ export const BottomNavbar = () => {
 
           {!profileLoading && profile && (
             <>
-              {/* AVATAR (read-only display, same as before) */}
+              {/* AVATAR — Tanda 7C: el aro toma el color del nivel de
+                  actividad (reward). */}
               <div className="text-center mb-4">
                 {profile.profile_picture_url ? (
                   <img
                     src={profile.profile_picture_url}
                     alt="profile"
-                    className="profile-avatar"
+                    className={`profile-avatar ${levelRingClass(stats?.activity_level)}`}
                     onError={(e) => { e.target.style.display = "none"; }}
                   />
                 ) : (
-                  <div className="profile-avatar profile-avatar-fallback">
+                  <div className={`profile-avatar profile-avatar-fallback ${levelRingClass(stats?.activity_level)}`}>
                     {initials(profile)}
                   </div>
                 )}
@@ -620,6 +689,15 @@ export const BottomNavbar = () => {
                 <ProgressBar now={stats?.activity_percent ?? 0} />
                 <div className="small text-secondary mt-1">
                   Last 4 weeks · {stats?.events_participated_count ?? 0} total events
+                </div>
+                {/* Tanda 7C — leyenda de rewards: cada etapa de la barra
+                    desbloquea un color de aro para tu avatar, visible
+                    también por tus amigos. */}
+                <div className="small text-secondary mt-2">
+                  Reward — your avatar ring levels up with you:{" "}
+                  <span className="text-nowrap"><span className="reward-dot low" />Low</span>{" · "}
+                  <span className="text-nowrap"><span className="reward-dot mid" />Active</span>{" · "}
+                  <span className="text-nowrap"><span className="reward-dot high" />Very active</span>
                 </div>
               </div>
 
@@ -769,7 +847,12 @@ export const BottomNavbar = () => {
         prefillCoords={null}
         currentUser={JSON.parse(localStorage.getItem("user") || "null")}
         onSaved={() => {
-          // refresh whatever needs refreshing (map, store, etc.)
+          // Tanda 7F2 — este callback estaba VACÍO: crear un evento desde
+          // el "+" del pill no refrescaba el mapa (Mapview solo refetchea
+          // con su propio modal). Ahora avisamos vía evento DOM local y
+          // Mapview refetchea al instante — y el resto de afectados
+          // recibe el ping "event:changed" por socket desde el backend.
+          announceEventsChanged();
         }}
       />
     </>

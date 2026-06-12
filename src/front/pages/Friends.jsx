@@ -245,6 +245,39 @@ const avatarStyle = (seed) => ({
   flexShrink: 0,
 });
 
+// Tanda 7A — Avatar real (profile_picture_url) en las cartas de amigos.
+// Mismas dimensiones que avatarStyle para que las cartas no salten
+// cuando unos amigos tienen foto y otros no.
+const avatarImgStyle = {
+  width: 44,
+  height: 44,
+  borderRadius: "50%",
+  objectFit: "cover",
+  flexShrink: 0,
+};
+
+// Tanda 7A — Primera frase de la bio del amigo (hasta el primer
+// . ! ? o salto de línea). Devuelve null si no hay bio; la carta
+// entonces no renderiza esa línea.
+const firstSentence = (bio) => {
+  const text = (bio || "").trim();
+  if (!text) return null;
+  const match = text.match(/^[^.!?\n]+[.!?]?/);
+  return match ? match[0].trim() : null;
+};
+
+// Tanda 7C — Reward por actividad: el aro del avatar del amigo toma el
+// color de su nivel (lo envía /friends como friend.activity_level).
+// Misma paleta que el activity bar del perfil: gris / cian / verde.
+const RING_COLORS = {
+  "Low activity": "#6c757d",
+  "Active":       "#22d3ee",
+  "Very active":  "#22c55e",
+};
+const ringStyle = (level) => ({
+  border: `3px solid ${RING_COLORS[level] || RING_COLORS["Low activity"]}`,
+});
+
 // =============================================================
 // MAIN COMPONENT
 // =============================================================
@@ -577,7 +610,11 @@ export const Friends = () => {
               />
             ) : (
               <Row className="g-3 mt-1">
-                {filteredFriends.map((f) => (
+                {filteredFriends.map((f) => {
+                  // Tanda 7A — primera frase de la descripción del amigo
+                  // (el backend ahora incluye bio en /friends).
+                  const bioLine = firstSentence(f.friend?.bio);
+                  return (
                   <Col md={6} lg={4} key={f.id}>
                     <Card className="friends-card friends-card-clickable h-100">
                       <Card.Body className="d-flex align-items-center gap-3 position-relative">
@@ -587,13 +624,31 @@ export const Friends = () => {
                           className="stretched-link"
                           aria-label={`Open ${f.friend.username}'s profile`}
                         />
-                        <div style={avatarStyle(f.friend.id)}>
-                          {initials(f.friend.username)}
-                        </div>
+                        {/* Avatar real si el amigo subió foto; si no,
+                            iniciales sobre gradiente como antes.
+                            Tanda 7C: el aro toma el color del nivel de
+                            actividad del amigo (reward visible). */}
+                        {f.friend.profile_picture_url ? (
+                          <img
+                            src={f.friend.profile_picture_url}
+                            alt=""
+                            style={{ ...avatarImgStyle, ...ringStyle(f.friend.activity_level) }}
+                            onError={(e) => { e.currentTarget.style.display = "none"; }}
+                          />
+                        ) : (
+                          <div style={{ ...avatarStyle(f.friend.id), ...ringStyle(f.friend.activity_level) }}>
+                            {initials(f.friend.username)}
+                          </div>
+                        )}
                         <div className="flex-grow-1 min-w-0">
                           <div className="text-light fw-semibold text-truncate">
                             {f.friend.username}
                           </div>
+                          {bioLine && (
+                            <div className="small text-secondary fst-italic text-truncate">
+                              {bioLine}
+                            </div>
+                          )}
                           <div className="small text-secondary">
                             Friends since{" "}
                             {new Date(f.updated_at).toLocaleDateString()}
@@ -617,7 +672,8 @@ export const Friends = () => {
                       </Card.Body>
                     </Card>
                   </Col>
-                ))}
+                  );
+                })}
               </Row>
             )}
           </Tab>

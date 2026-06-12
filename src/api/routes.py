@@ -1,6 +1,19 @@
-from flask import Blueprint, request, jsonify
+import os
+
+# Tanda 7V — subida de media a Cloudinary (la lib ya estaba en el
+# Pipfile sin usar). Se configura sola desde la env var CLOUDINARY_URL.
+import cloudinary
+import cloudinary.uploader
+
+from flask import Blueprint, request, jsonify, redirect, current_app
 from flask_cors import CORS
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import (
+    create_access_token, jwt_required, get_jwt_identity,
+    set_access_cookies, unset_jwt_cookies, get_csrf_token,
+)
+# Tanda 7E — tokens firmados con caducidad para los links de email
+# (itsdangerous viene con Flask, sin dependencia nueva).
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import text, bindparam, or_
 from api.models import (
@@ -8,10 +21,97 @@ from api.models import (
     Notification, EventInvitation, InviteSuggestion,
     ChatRoomMembership, event_participants,
 )
+# Tanda 7F — Socket.IO: instancia global + helpers (ver api/sockets.py).
+from api.sockets import socketio, emit_to_user, allowed_origins
+# Tanda 7E — emails transaccionales (ver api/mailer.py).
+from api.mailer import (
+    mail_configured, frontend_base_url,
+    send_verification_email, send_password_reset_email,
+)
 from datetime import datetime, timedelta
 
 api = Blueprint('api', __name__)
-CORS(api)
+
+# Tanda 7D — Con cookies de sesión (credentials) el navegador rechaza el
+# comodín "*": hay que enumerar orígenes permitidos. En producción
+# (Render) el propio Flask sirve el frontend (mismo origen) y CORS ni
+# interviene; esta lista cubre el desarrollo en Codespaces y en local.
+CORS(
+    api,
+    supports_credentials=True,
+    origins=[
+        r"https://.*\.app\.github\.dev",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://localhost:3000",
+    ],
+)
+
+
+# Tanda 7D — JWT en cookies httpOnly (el token deja de vivir en
+# localStorage, donde cualquier XSS podía leerlo).
+#
+# app.py es intocable en este proyecto, pero un blueprint puede inyectar
+# config en la app durante su registro: record_once corre UNA sola vez,
+# antes de servir la primera request — mismo efecto que escribirlo en
+# app.py sin tocarlo.
+@api.record_once
+def _configure_jwt_cookies(state):
+    app = state.app
+    # "cookies" primero: el navegador adjunta la cookie httpOnly solo.
+    # "headers" se mantiene como segunda vía para Postman / clientes API
+    # (Authorization: Bearer <token del body del login>).
+    app.config["JWT_TOKEN_LOCATION"] = ["cookies", "headers"]
+    app.config["JWT_ACCESS_COOKIE_NAME"] = "sq_access_token"
+    # Solo HTTPS — Codespaces y Render siempre lo son. (En un http://
+    # plano el navegador no guardaría la cookie; ahí usa el flujo
+    # Bearer de Postman.)
+    app.config["JWT_COOKIE_SECURE"] = True
+    # En dev el front (puerto 3000) y la API (3001) viven en subdominios
+    # distintos de app.github.dev → la cookie debe ser SameSite=None
+    # para viajar cross-origin. En Render (mismo origen) también vale.
+    app.config["JWT_COOKIE_SAMESITE"] = "None"
+    # Double-submit CSRF: además de la cookie httpOnly, el cliente debe
+    # mandar el header X-CSRF-TOKEN en POST/PUT/PATCH/DELETE. Como en
+    # dev el front no puede leer cookies del dominio de la API, el
+    # login devuelve csrf_token también en el body. El CSRF solo aplica
+    # a la vía cookie — la vía Bearer (Postman) queda exenta.
+    app.config["JWT_COOKIE_CSRF_PROTECT"] = True
+
+
+# Tanda 7F — Socket.IO sin tocar app.py: init_app envuelve app.wsgi_app
+# con el middleware de socket.io, así el gunicorn / flask run existentes
+# sirven también el tráfico de /socket.io. El handshake se autentica con
+# la cookie httpOnly (ver api/sockets.py).
+@api.record_once
+def _init_socketio(state):
+    socketio.init_app(state.app, cors_allowed_origins=allowed_origins())
+
+
+# ── Tanda 7E — tokens de email (firmados + caducidad) ──────
+# Firmados con la misma secret del JWT; el "salt" separa los usos para
+# que un token de verificación jamás sirva para resetear contraseña.
+EMAIL_VERIFY_SALT = "sq-email-verify"
+EMAIL_VERIFY_MAX_AGE = 3 * 24 * 3600   # 3 días
+PASSWORD_RESET_SALT = "sq-password-reset"
+PASSWORD_RESET_MAX_AGE = 3600          # 1 hora
+
+
+def _email_serializer():
+    return URLSafeTimedSerializer(current_app.config["JWT_SECRET_KEY"])
+
+
+def _make_email_token(user_id, salt):
+    return _email_serializer().dumps({"uid": user_id}, salt=salt)
+
+
+def _read_email_token(token, salt, max_age):
+    """user_id o None (firma inválida / caducado / malformado)."""
+    try:
+        data = _email_serializer().loads(token, salt=salt, max_age=max_age)
+        return data.get("uid")
+    except (BadSignature, SignatureExpired, Exception):
+        return None
 
 
 # How long a sender can edit their own chat message after posting it.
@@ -36,6 +136,13 @@ def _create_notification(user_id, notif_type, payload):
         payload=payload or {}, is_read=False,
     )
     db.session.add(notif)
+    # Tanda 7F — ping en tiempo real a la sala personal del destinatario.
+    # Único punto de emisión para TODOS los tipos de notificación. El
+    # cliente refetchea /notifications al recibirlo (patrón ping→refetch):
+    # si esta transacción aún no comiteó cuando llega el refetch, el poll
+    # de fallback lo recoge en el siguiente tick — nunca hay estado
+    # inventado en el cliente.
+    emit_to_user(user_id, "notification:new", {"type": notif_type})
     return notif
 
 
@@ -254,6 +361,117 @@ def _dispatch_my_reminders(user_id):
 
 
 # =========================================================
+# PAST-EVENT HELPERS (internal) — Tanda 7B
+# =========================================================
+
+def _event_datetime(event):
+    """Parse the event's string date/time columns into a datetime.
+
+    Returns None when the strings are malformed — callers must treat
+    that as "not past" so a single bad row never blocks anything.
+    """
+    try:
+        return datetime.strptime(
+            "{} {}".format(event.date, (event.time or "")[:5]),
+            "%Y-%m-%d %H:%M",
+        )
+    except (ValueError, TypeError):
+        # Fallback: date-only (event counts as past from midnight on).
+        try:
+            return datetime.strptime(event.date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return None
+
+
+def _event_is_past(event):
+    """True when the event's date+time is strictly behind utcnow().
+
+    utcnow() for coherence with the reminder dispatcher above, which
+    compares the same string columns against the same clock.
+    """
+    dt = _event_datetime(event)
+    return dt is not None and dt < datetime.utcnow()
+
+
+# Tanda 7F2 — "event:changed": ping en tiempo real a la AUDIENCIA de un
+# evento (creador + participantes + invitados pendientes + amigos del
+# creador si es público) cada vez que algo del evento cambia. El cliente
+# (Mapview) refetchea /events al recibirlo — el mapa de todos se
+# actualiza al instante al crear/editar/borrar/responder. Mismo patrón
+# ping→refetch que notification:new y chat:message.
+
+def _event_audience_ids(event):
+    ids = {event.creator_id}
+    ids.update(p.id for p in event.participants)
+    ids.update(inv.user_id for inv in (event.invitations or []))
+    if event.is_public:
+        ids.update(_get_friend_ids(event.creator_id))
+    return ids
+
+
+def _emit_event_ping(event_or_ids, action, event_id=None):
+    """Acepta el objeto Event o un set de user_ids precalculado (útil en
+    delete_event, donde la audiencia hay que capturarla ANTES de borrar
+    la fila). Best-effort vía emit_to_user — jamás rompe la request."""
+    if isinstance(event_or_ids, (set, frozenset, list, tuple)):
+        ids, eid = set(event_or_ids), event_id
+    else:
+        ids, eid = _event_audience_ids(event_or_ids), event_or_ids.id
+    for uid in ids:
+        emit_to_user(uid, "event:changed", {"event_id": eid, "action": action})
+
+
+def _dispatch_my_event_confirmations(user_id):
+    """Per-creator opportunistic confirmation dispatcher.
+
+    Same lazy pattern as _dispatch_my_reminders: called as a side-effect
+    from `GET /api/notifications` and `/notifications/unread-count`, so
+    the question pops up in the bell shortly after the event ends —
+    no cron needed.
+
+    For every PAST event the user created whose `happened` is still
+    NULL, create ONE `event_confirmation` notification asking whether
+    the event took place as planned. Idempotent: events that already
+    have a confirmation notif for this user are skipped, so answering
+    "later" (leaving the notif unread) never duplicates it.
+    """
+    pending = Event.query.filter(
+        Event.creator_id == user_id,
+        Event.happened.is_(None),
+    ).all()
+    if not pending:
+        return
+
+    existing = Notification.query.filter_by(
+        user_id=user_id, type="event_confirmation",
+    ).all()
+    asked_event_ids = {
+        (n.payload or {}).get("event_id") for n in existing
+    }
+
+    created_any = False
+    for event in pending:
+        if event.id in asked_event_ids:
+            continue
+        if not _event_is_past(event):
+            continue
+        _create_notification(
+            user_id=user_id,
+            notif_type="event_confirmation",
+            payload={
+                "event_id":    event.id,
+                "event_title": event.title,
+                "event_date":  event.date,
+                "event_time":  event.time,
+            },
+        )
+        created_any = True
+
+    if created_any:
+        db.session.commit()
+
+
+# =========================================================
 # CHAT MEMBERSHIP HELPER (internal)
 # =========================================================
 
@@ -273,6 +491,25 @@ def _can_access_room(room, user_id):
     if room.type == "dm":
         return user_id in (room.user_a_id, room.user_b_id)
     return False
+
+
+def _room_member_ids(room):
+    """User ids con acceso a la sala (participantes del evento o par del DM)."""
+    if room.type == "event":
+        return [p.id for p in room.event.participants] if room.event else []
+    return [uid for uid in (room.user_a_id, room.user_b_id) if uid is not None]
+
+
+def _emit_chat_ping(room):
+    """Tanda 7F — aviso en tiempo real a todos los miembros de la sala.
+
+    Se emite DESPUÉS del commit del mensaje. Incluye al emisor a
+    propósito: así sus otras pestañas/dispositivos también refrescan la
+    lista de chats. Payload mínimo {room_id}; el cliente refetchea por
+    la API REST (patrón ping→refetch).
+    """
+    for uid in _room_member_ids(room):
+        emit_to_user(uid, "chat:message", {"room_id": room.id})
 
 
 # =========================================================
@@ -332,6 +569,11 @@ def register():
     if not email or not password or not username:
         return jsonify({"msg": "Email, username and password are required"}), 400
 
+    # Tanda 7D — misma regla mínima que reset-password (antes register
+    # aceptaba contraseñas de 1 carácter).
+    if not isinstance(password, str) or len(password) < 6:
+        return jsonify({"msg": "Password must be at least 6 characters"}), 400
+
     # Quick syntactic check on username — alphanumeric + . _ - allowed.
     import re
     if not re.fullmatch(r"[A-Za-z0-9._-]{3,30}", username):
@@ -349,10 +591,47 @@ def register():
         username=username,
         password=generate_password_hash(password),
         is_active=True,
+        # Tanda 7E — nace sin verificar; se confirma con el link del email.
+        email_verified=False,
     )
     db.session.add(new_user)
     db.session.commit()
-    return jsonify({"msg": "User registered successfully", "user": new_user.serialize()}), 201
+
+    # Tanda 7E — email de confirmación (best-effort: si el SMTP no está
+    # configurado o falla, el registro NO se rompe; el front informa).
+    email_sent = False
+    if mail_configured():
+        token = _make_email_token(new_user.id, EMAIL_VERIFY_SALT)
+        # El link apunta al BACKEND, que valida y redirige al login del
+        # frontend con ?verified=1|0 (un email no puede hacer fetch).
+        verify_url = "{}/api/verify-email/{}".format(
+            request.url_root.rstrip("/").replace("http://", "https://"), token)
+        email_sent = bool(send_verification_email(new_user, verify_url))
+
+    return jsonify({
+        "msg": "User registered successfully",
+        "user": new_user.serialize(),
+        "verification_email_sent": email_sent,
+    }), 201
+
+
+# Tanda 7E — el usuario clica el link del email: validamos el token y
+# redirigimos al login del frontend con el resultado en la query string.
+@api.route('/verify-email/<token>', methods=['GET'])
+def verify_email(token):
+    front = frontend_base_url()
+    user_id = _read_email_token(token, EMAIL_VERIFY_SALT, EMAIL_VERIFY_MAX_AGE)
+    if not user_id:
+        return redirect("{}/login?verified=0".format(front))
+
+    user = db.session.get(User, user_id)
+    if not user:
+        return redirect("{}/login?verified=0".format(front))
+
+    if not user.email_verified:
+        user.email_verified = True
+        db.session.commit()
+    return redirect("{}/login?verified=1".format(front))
 
 
 # =========================================================
@@ -396,19 +675,115 @@ def login():
         identity=str(user.id),
         expires_delta=JWT_LIFETIME,
     )
-    return jsonify({"token": access_token, "user": user.serialize()}), 200
+
+    # Tanda 7D — la sesión del navegador es la cookie httpOnly (el JS no
+    # puede leerla → inmune a exfiltración por XSS). En el body viajan:
+    #   - user        → datos de UI que el front persiste
+    #   - csrf_token  → anti-CSRF double-submit (header X-CSRF-TOKEN);
+    #                   va en el body porque en dev el front no puede
+    #                   leer cookies del dominio de la API
+    #   - token       → SOLO para Postman/clientes API (vía Bearer).
+    #                   El frontend web lo ignora y no lo persiste.
+    resp = jsonify({
+        "msg":        "Login successful",
+        "user":       user.serialize(),
+        "csrf_token": get_csrf_token(access_token),
+        "token":      access_token,
+    })
+    set_access_cookies(
+        resp, access_token,
+        max_age=int(JWT_LIFETIME.total_seconds()),
+    )
+    return resp, 200
 
 
 # =========================================================
-# RESET PASSWORD (MVP — direct, no email/token)
+# LOGOUT — Tanda 7D
 # =========================================================
-# Intentionally simple for the MVP: identify by email OR username and set a
-# new password immediately. This is NOT secure (anyone who knows a username
-# can change its password) and is meant to be replaced by an email-link flow
-# once a real sender domain is available.
 
-@api.route('/reset-password', methods=['POST'])
-def reset_password():
+@api.route('/logout', methods=['POST'])
+def logout():
+    """Borra las cookies de sesión (httpOnly + csrf).
+
+    Sin @jwt_required a propósito: un logout debe funcionar aunque la
+    cookie ya haya expirado — siempre responde 200 y deja el navegador
+    limpio.
+    """
+    resp = jsonify({"msg": "Logged out"})
+    unset_jwt_cookies(resp)
+    return resp, 200
+
+
+# =========================================================
+# MEDIA UPLOAD — Tanda 7V (Cloudinary)
+# =========================================================
+# Hasta ahora las imágenes (perfil, evento, chat) se guardaban como
+# base64 DENTRO de la base de datos y viajaban completas en cada
+# respuesta (GET /events con 20 eventos con foto ≈ varios MB). Este
+# endpoint las sube a Cloudinary y devuelve la URL hosteada: en la
+# base solo se guarda la URL (~100 bytes) y el navegador descarga la
+# imagen del CDN, cacheada. Los datos base64 ya existentes siguen
+# funcionando (los campos son Text y el front pinta ambos formatos).
+
+@api.route('/upload', methods=['POST'])
+@jwt_required()
+def upload_media():
+    """Body: {"data_url": "data:image/...;base64,....", "kind": "profile"}
+
+    kind ∈ profile | event | chat | audio → carpeta en Cloudinary.
+    Devuelve {"url": "https://res.cloudinary.com/..."}.
+    """
+    if not os.getenv("CLOUDINARY_URL"):
+        # Sin credenciales el front cae solo al modo legacy (base64
+        # directo a la base) — la app no se rompe, solo no optimiza.
+        return jsonify({"msg": "Media uploads not configured (missing CLOUDINARY_URL)"}), 503
+
+    body = request.get_json() or {}
+    data_url = body.get("data_url")
+    kind = body.get("kind") if body.get("kind") in (
+        "profile", "event", "chat", "audio") else "misc"
+
+    if not isinstance(data_url, str) or not data_url.startswith("data:"):
+        return jsonify({"msg": "data_url (base64 data URL) is required"}), 400
+    # ~12 MB de base64 ≈ 9 MB reales — tope generoso (el front ya
+    # comprime imágenes a ~250-500 KB antes de llegar aquí).
+    if len(data_url) > 12_000_000:
+        return jsonify({"msg": "File too large"}), 413
+
+    try:
+        result = cloudinary.uploader.upload(
+            data_url,
+            folder="sidequest/{}".format(kind),
+            # "auto": acepta imagen y audio/video (notas de voz del chat).
+            resource_type="auto",
+        )
+    except Exception:
+        return jsonify({"msg": "Upload failed"}), 502
+
+    return jsonify({"url": result.get("secure_url")}), 201
+
+
+# =========================================================
+# PASSWORD RECOVERY — Tanda 7E (email-link flow)
+# =========================================================
+# Sustituye al antiguo POST /reset-password "directo", que permitía a
+# CUALQUIERA cambiar la contraseña de un usuario sabiendo su username
+# (compromiso MVP documentado). Ahora son dos pasos:
+#
+#   1. POST /password-recovery {identifier}
+#        → si la cuenta existe, envía un email con un link firmado
+#          (caducidad 1 h). SIEMPRE responde 200 con el mismo mensaje
+#          para no revelar qué emails/usernames existen (anti-enumeración).
+#   2. POST /password-reset-confirm {token, password}
+#        → valida el token y guarda la nueva contraseña.
+
+@api.route('/password-recovery', methods=['POST'])
+def password_recovery():
+    if not mail_configured():
+        return jsonify({
+            "msg": "Password recovery by email is not configured on this server"
+        }), 503
+
     body = request.get_json() or {}
     identifier = (
         body.get("identifier")
@@ -416,21 +791,56 @@ def reset_password():
         or body.get("username")
         or ""
     ).strip()
-    password = body.get("password") or ""
-
-    if not identifier or not password:
-        return jsonify({"msg": "Email/username and new password are required"}), 400
-    if len(password) < 6:
-        return jsonify({"msg": "Password must be at least 6 characters"}), 400
+    if not identifier:
+        return jsonify({"msg": "Email or username is required"}), 400
 
     lowered = identifier.lower()
     user = User.query.filter(
         or_(User.email == lowered, User.username == identifier)
     ).first()
+
+    if user:
+        token = _make_email_token(user.id, PASSWORD_RESET_SALT)
+        # Tanda 7H — token por QUERY STRING, no por path: los tokens de
+        # itsdangerous llevan puntos y el dev-server de Vite trata todo
+        # path cuyo último segmento contiene "." como un fichero (no
+        # aplica el fallback SPA) → 404 al abrir el link del email.
+        # La query string no afecta al fallback en ningún servidor.
+        reset_url = "{}/reset-password?token={}".format(
+            frontend_base_url(), token)
+        send_password_reset_email(user, reset_url)
+
+    # Mismo 200 exista o no la cuenta — anti user-enumeration.
+    return jsonify({
+        "msg": "If that account exists, we've sent a reset link to its email."
+    }), 200
+
+
+@api.route('/password-reset-confirm', methods=['POST'])
+def password_reset_confirm():
+    body = request.get_json() or {}
+    token = body.get("token") or ""
+    password = body.get("password") or ""
+
+    if not token or not password:
+        return jsonify({"msg": "Token and new password are required"}), 400
+    if not isinstance(password, str) or len(password) < 6:
+        return jsonify({"msg": "Password must be at least 6 characters"}), 400
+
+    user_id = _read_email_token(
+        token, PASSWORD_RESET_SALT, PASSWORD_RESET_MAX_AGE)
+    if not user_id:
+        return jsonify({
+            "msg": "This reset link is invalid or has expired. Request a new one."
+        }), 400
+
+    user = db.session.get(User, user_id)
     if not user:
-        return jsonify({"msg": "No account found with that email or username"}), 404
+        return jsonify({"msg": "Account no longer exists"}), 404
 
     user.password = generate_password_hash(password)
+    # De paso: si llegó al email, el email es suyo — lo marcamos verificado.
+    user.email_verified = True
     db.session.commit()
     return jsonify({"msg": "Password updated. You can now log in."}), 200
 
@@ -538,6 +948,7 @@ def create_event():
         )
 
     db.session.commit()
+    _emit_event_ping(event, "created")
     return jsonify({"msg": "Event created", "event": event.serialize(current_user_id=current_user_id)}), 201
 
 
@@ -545,7 +956,12 @@ def create_event():
 @jwt_required()
 def get_events():
     current_user_id = int(get_jwt_identity())
-    all_events = Event.query.all()
+    # Tanda 7C — Los eventos que el creador marcó como NO realizados
+    # (happened == False) desaparecen de la UI (mapa, listas, calendario)
+    # pero permanecen en la base como "creado pero cancelado".
+    all_events = Event.query.filter(
+        or_(Event.happened.is_(None), Event.happened.is_(True))
+    ).all()
     visible = []
     for e in all_events:
         if e.creator_id == current_user_id:
@@ -685,6 +1101,7 @@ def update_event(event_id):
         )
 
     db.session.commit()
+    _emit_event_ping(event, "updated")
     return jsonify({"msg": "Event updated", "event": event.serialize(current_user_id=current_user_id)}), 200
 
 
@@ -756,6 +1173,8 @@ def invite_to_event(event_id):
         existing_inv_ids.add(target_id)
 
     db.session.commit()
+    if created:
+        _emit_event_ping(event, "invited")
     return jsonify({
         "msg": f"{len(created)} invitation(s) sent",
         "invitations": created,
@@ -801,6 +1220,7 @@ def respond_event(event_id):
                 event_id, user_id=current_user_id)
             _notify_rsvp_changed(event, responder, "not_going")
             db.session.commit()
+            _emit_event_ping(event, "rsvp")
             return jsonify({
                 "msg": "Invitation declined",
                 "event": event.serialize(current_user_id=current_user_id),
@@ -819,6 +1239,7 @@ def respond_event(event_id):
         )
         _notify_rsvp_changed(event, responder, response)
         db.session.commit()
+        _emit_event_ping(event, "rsvp")
         return jsonify({
             "msg": "Invitation accepted",
             "event": event.serialize(current_user_id=current_user_id),
@@ -848,6 +1269,8 @@ def respond_event(event_id):
         if previous_rsvp != response:
             _notify_rsvp_changed(event, responder, response)
         db.session.commit()
+        if previous_rsvp != response:
+            _emit_event_ping(event, "rsvp")
         return jsonify({
             "msg": "RSVP updated" if previous_rsvp != response else "RSVP unchanged",
             "event": event.serialize(current_user_id=current_user_id),
@@ -891,6 +1314,8 @@ def rsvp_event(event_id):
     if previous_rsvp != rsvp:
         _notify_rsvp_changed(event, responder, rsvp)
     db.session.commit()
+    if previous_rsvp != rsvp:
+        _emit_event_ping(event, "rsvp")
     return jsonify({
         "msg": "RSVP updated" if previous_rsvp != rsvp else "RSVP unchanged",
         "event": event.serialize(current_user_id=current_user_id),
@@ -924,6 +1349,7 @@ def accept_event_invitation(event_id):
     )
     _notify_rsvp_changed(event, user, "going")
     db.session.commit()
+    _emit_event_ping(event, "rsvp")
     return jsonify({"msg": "Invitation accepted", "event": event.serialize(current_user_id=current_user_id)}), 200
 
 
@@ -946,6 +1372,7 @@ def refuse_event_invitation(event_id):
     _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
     _notify_rsvp_changed(event, responder, "not_going")
     db.session.commit()
+    _emit_event_ping(event, "rsvp")
     return jsonify({"msg": "Invitation refused"}), 200
 
 
@@ -974,6 +1401,7 @@ def leave_event(event_id):
     # Tell the creator someone left — semantically a "rsvp_changed → not_going".
     _notify_rsvp_changed(event, target, "not_going")
     db.session.commit()
+    _emit_event_ping(event, "left")
     return jsonify({"msg": "Left event", "event_id": event_id}), 200
 
 
@@ -986,6 +1414,22 @@ def delete_event(event_id):
         return jsonify({"msg": "Event not found"}), 404
     if event.creator_id != current_user_id:
         return jsonify({"msg": "Only the creator can delete this event"}), 403
+
+    # Tanda 7B/7C — Past events are history: they can NEVER be deleted.
+    # The creator answers the event_confirmation notification instead
+    # (PUT /events/<id>/confirm). Events marked as NOT happened
+    # (happened == False) disappear from the UI (get_events filters
+    # them out) but stay in the database as a "created but cancelled"
+    # record — useful data for later.
+    if _event_is_past(event):
+        return jsonify({
+            "msg": "Past events cannot be deleted. Please confirm whether "
+                   "the event took place from your notifications instead."
+        }), 409
+
+    # Tanda 7F2 — capturar la audiencia ANTES de vaciar participantes y
+    # borrar la fila: después ya no se puede calcular.
+    audience = _event_audience_ids(event)
 
     creator = db.session.get(User, current_user_id)
 
@@ -1008,7 +1452,8 @@ def delete_event(event_id):
     _delete_event_payload_notifications(
         event_id,
         types=("event_updated", "event_removed",
-               "rsvp_changed", "event_reminder"),
+               "rsvp_changed", "event_reminder",
+               "event_confirmation"),
     )
 
     EventInvitation.query.filter_by(event_id=event_id).delete()
@@ -1021,7 +1466,61 @@ def delete_event(event_id):
 
     db.session.delete(event)
     db.session.commit()
+    _emit_event_ping(audience, "deleted", event_id=event_id)
     return jsonify({"msg": "Event deleted"}), 200
+
+
+# Tanda 7B — El creador responde a la pregunta "¿el evento pasó como
+# previsto?" que le llega por la notificación event_confirmation.
+@api.route('/events/<int:event_id>/confirm', methods=['PUT'])
+@jwt_required()
+def confirm_event(event_id):
+    """Body: {"happened": true | false}.
+
+    Only the creator can answer, and only once the event is past.
+    The answer is stored on event.happened and the matching
+    event_confirmation notification is stamped with payload.response
+    ("yes"/"no") + marked read — same keep-the-row pattern as
+    friend_request.status, so the bell can show the outcome instead
+    of resurrecting the question on the next poll.
+    """
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    if event.creator_id != current_user_id:
+        return jsonify({"msg": "Only the creator can confirm this event"}), 403
+    if not _event_is_past(event):
+        return jsonify({"msg": "You can only confirm an event after it has taken place"}), 409
+
+    body = request.get_json() or {}
+    happened = body.get("happened")
+    if not isinstance(happened, bool):
+        return jsonify({"msg": "`happened` must be true or false"}), 400
+
+    event.happened = happened
+
+    # Stamp + mark read the confirmation notif(s) for this event.
+    notifs = Notification.query.filter_by(
+        user_id=current_user_id, type="event_confirmation",
+    ).all()
+    for n in notifs:
+        if (n.payload or {}).get("event_id") == event_id:
+            payload = dict(n.payload or {})
+            payload["response"] = "yes" if happened else "no"
+            # Reasignar un dict NUEVO — mutar el JSON in-place no dispara
+            # el change-tracking de SQLAlchemy y el stamp no se guardaría.
+            n.payload = payload
+            n.is_read = True
+
+    db.session.commit()
+    # Tanda 7F2 — clave cuando happened == False: el evento desaparece de
+    # la UI de TODOS (get_events lo filtra) → sus mapas deben refrescar.
+    _emit_event_ping(event, "confirmed")
+    return jsonify({
+        "msg": "Event confirmed" if happened else "Event marked as not happened",
+        "event": event.serialize(current_user_id),
+    }), 200
 
 
 @api.route('/events/<int:event_id>/participants/<int:user_id>', methods=['DELETE'])
@@ -1065,6 +1564,10 @@ def remove_participant(event_id, user_id):
                 },
             )
         db.session.commit()
+        # El expulsado ya no está en la audiencia — ping aparte para él.
+        _emit_event_ping(event, "removed")
+        emit_to_user(user_id, "event:changed",
+                     {"event_id": event.id, "action": "removed"})
         return jsonify({"msg": "Participant removed", "event": event.serialize(current_user_id=current_user_id)}), 200
 
     # Pending invitee?
@@ -1085,6 +1588,9 @@ def remove_participant(event_id, user_id):
                 },
             )
         db.session.commit()
+        _emit_event_ping(event, "removed")
+        emit_to_user(user_id, "event:changed",
+                     {"event_id": event.id, "action": "removed"})
         return jsonify({"msg": "Invitation cancelled", "event": event.serialize(current_user_id=current_user_id)}), 200
 
     return jsonify({"msg": "User is not a participant nor invited"}), 404
@@ -1327,6 +1833,9 @@ def approve_suggestion(event_id, suggestion_id):
 
     inv = _approve_suggestion_internal(event, sug)
     db.session.commit()
+    # Tanda 7F2 — el sugerido ahora tiene invitación pendiente: su mapa
+    # (filtro "Invited") y el badge del creador deben refrescar.
+    _emit_event_ping(event, "invited")
     return jsonify({
         "msg": "Suggestion approved",
         "invitation": inv.serialize() if inv else None,
@@ -1399,6 +1908,8 @@ def approve_all_suggestions(event_id):
             converted.append(inv.serialize())
 
     db.session.commit()
+    if converted:
+        _emit_event_ping(event, "invited")
     return jsonify({
         "msg": f"{len(converted)} suggestion(s) approved",
         "invitations": converted,
@@ -1470,7 +1981,19 @@ def list_friends():
         (Friendship.requester_id == current_user_id) | (
             Friendship.addressee_id == current_user_id)
     ).all()
-    return jsonify([f.serialize(current_user_id=current_user_id) for f in friendships]), 200
+    data = [f.serialize(current_user_id=current_user_id) for f in friendships]
+
+    # Tanda 7C — Reward visible entre amigos: añadimos el nivel de
+    # actividad de cada amigo (aro de color del avatar en el frontend).
+    # Una sola query agrupada para toda la lista — ver _activity_levels_for.
+    friend_ids = [d["friend"]["id"] for d in data if d.get("friend")]
+    levels = _activity_levels_for(friend_ids)
+    for d in data:
+        if d.get("friend"):
+            d["friend"]["activity_level"] = levels.get(
+                d["friend"]["id"], "Low activity")
+
+    return jsonify(data), 200
 
 
 @api.route('/friends/requests', methods=['GET'])
@@ -1694,41 +2217,105 @@ def search_users():
 # PROFILE
 # =========================================================
 
-def _compute_stats(user_id):
-    events_created_count = Event.query.filter(
-        Event.creator_id == user_id).count()
+# Tanda 7C — Niveles de actividad = etapas de la reward. La paleta del
+# frontend (aro del avatar) está mapeada 1:1 a estos strings:
+#   "Low activity"  → aro gris      (< 2 eventos/semana en 4 semanas)
+#   "Active"        → aro cian      (2 - 3 eventos/semana)
+#   "Very active"   → aro verde     (≥ 3 eventos/semana)
+def _level_from_avg(avg_per_week):
+    if avg_per_week < 2:
+        return "Low activity"
+    if avg_per_week < 3:
+        return "Active"
+    return "Very active"
+
+
+def _activity_levels_for(user_ids):
+    """Activity level for MANY users in one grouped query.
+
+    Used by list_friends so the reward ring shows on every friend card
+    without computing a full per-friend profile (no N+1). Same window
+    and rules as _compute_stats: last 4 weeks, past events only, and
+    events marked as not-happened count for nothing.
+    """
+    user_ids = [uid for uid in user_ids if uid is not None]
+    if not user_ids:
+        return {}
+
     today = datetime.utcnow().date()
-
-    all_events = Event.query.all()
-    participated_all = [e for e in all_events if user_id in [
-        p.id for p in e.participants]]
-
-    def _is_past(e):
-        try:
-            return datetime.strptime(e.date, "%Y-%m-%d").date() <= today
-        except (ValueError, TypeError):
-            return False
-
-    participated = [e for e in participated_all if _is_past(e)]
-    events_participated_count = len(participated)
-
     window_start = today - timedelta(weeks=4)
-    recent_count = 0
-    for e in participated:
-        try:
-            event_date = datetime.strptime(e.date, "%Y-%m-%d").date()
-            if window_start <= event_date <= today:
-                recent_count += 1
-        except (ValueError, TypeError):
-            continue
+
+    # Las fechas son strings ISO ("YYYY-MM-DD"): comparan correctamente
+    # como texto plano, así el filtro corre entero en SQL.
+    rows = db.session.execute(
+        text(
+            "SELECT ep.user_id, COUNT(*) "
+            "FROM event_participants ep "
+            "JOIN event e ON e.id = ep.event_id "
+            "WHERE ep.user_id IN :uids "
+            "  AND e.date >= :wstart AND e.date <= :today "
+            "  AND (e.happened IS NULL OR e.happened = :t) "
+            "GROUP BY ep.user_id"
+        ).bindparams(bindparam("uids", expanding=True)),
+        {
+            "uids":   user_ids,
+            "wstart": window_start.isoformat(),
+            "today":  today.isoformat(),
+            "t":      True,
+        },
+    ).fetchall()
+    recent_counts = {row[0]: row[1] for row in rows}
+
+    return {
+        uid: _level_from_avg(round(recent_counts.get(uid, 0) / 4.0, 2))
+        for uid in user_ids
+    }
+
+
+def _compute_stats(user_id):
+    """Aggregate activity stats for one user.
+
+    Tanda 7C — two changes vs the original:
+      * Events the creator marked as NOT happened (happened == False)
+        count for NOTHING: ni created, ni participated, ni nivel. Siguen
+        en la base como "creado pero cancelado" (dato para más adelante).
+      * The old version loaded EVERY event in the database to count one
+        user's participations; rewritten as aggregate SQL so profiles and
+        the friends list stay fast as the table grows.
+    """
+    today = datetime.utcnow().date()
+    window_start = today - timedelta(weeks=4)
+
+    events_created_count = Event.query.filter(
+        Event.creator_id == user_id,
+        or_(Event.happened.is_(None), Event.happened.is_(True)),
+    ).count()
+
+    # Participated = eventos pasados (date <= hoy, mismo criterio que la
+    # versión anterior) donde el user figura en event_participants y el
+    # evento no fue cancelado. Fechas ISO → comparación como string.
+    row = db.session.execute(
+        text(
+            "SELECT COUNT(*), "
+            "       SUM(CASE WHEN e.date >= :wstart THEN 1 ELSE 0 END) "
+            "FROM event_participants ep "
+            "JOIN event e ON e.id = ep.event_id "
+            "WHERE ep.user_id = :uid "
+            "  AND e.date <= :today "
+            "  AND (e.happened IS NULL OR e.happened = :t)"
+        ),
+        {
+            "uid":    user_id,
+            "wstart": window_start.isoformat(),
+            "today":  today.isoformat(),
+            "t":      True,
+        },
+    ).fetchone()
+    events_participated_count = int(row[0] or 0)
+    recent_count = int(row[1] or 0)
 
     activity_avg_per_week = round(recent_count / 4.0, 2)
-    if activity_avg_per_week < 2:
-        activity_level = "Low activity"
-    elif activity_avg_per_week < 3:
-        activity_level = "Active"
-    else:
-        activity_level = "Very active"
+    activity_level = _level_from_avg(activity_avg_per_week)
     activity_percent = min(100, int((activity_avg_per_week / 5.0) * 100))
 
     return {
@@ -2016,6 +2603,7 @@ def post_room_message(room_id):
     membership = _get_or_create_membership(room.id, current_user_id)
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
 
 
@@ -2049,6 +2637,7 @@ def edit_room_message(room_id, msg_id):
     msg.text = new_text
     msg.edited_at = datetime.utcnow()
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message updated", "message": msg.serialize()}), 200
 
 
@@ -2075,6 +2664,7 @@ def delete_room_message(room_id, msg_id):
     msg.media_url = None
     msg.media_type = None
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message deleted", "message": msg.serialize()}), 200
 
 
@@ -2135,6 +2725,7 @@ def post_event_message(event_id):
     membership = _get_or_create_membership(room.id, current_user_id)
     membership.last_read_at = datetime.utcnow()
     db.session.commit()
+    _emit_chat_ping(room)
     return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
 
 
@@ -2153,6 +2744,12 @@ def list_notifications():
         _dispatch_my_reminders(current_user_id)
     except Exception:
         db.session.rollback()
+    # Tanda 7B — same lazy pattern for the post-event "did it happen?"
+    # question to the creator.
+    try:
+        _dispatch_my_event_confirmations(current_user_id)
+    except Exception:
+        db.session.rollback()
     q = Notification.query.filter_by(user_id=current_user_id)
     if request.args.get("only_unread") in ("1", "true", "True"):
         q = q.filter_by(is_read=False)
@@ -2168,6 +2765,11 @@ def notifications_unread_count():
     # endpoint, so any new reminder pops up on the next tick.
     try:
         _dispatch_my_reminders(current_user_id)
+    except Exception:
+        db.session.rollback()
+    # Tanda 7B — post-event confirmation question for creators.
+    try:
+        _dispatch_my_event_confirmations(current_user_id)
     except Exception:
         db.session.rollback()
     count = Notification.query.filter_by(

@@ -37,6 +37,12 @@ class User(db.Model):
     birthdate:           Mapped[str] = mapped_column(String(20),  nullable=True)
     phone:               Mapped[str] = mapped_column(String(30),  nullable=True)
     created_at:          Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
+    # Tanda 7E — confirmación de email por link firmado (GET
+    # /verify-email/<token>). Los usuarios anteriores a esta tanda
+    # quedan en True via server_default en la migración; los nuevos
+    # nacen en False hasta que clican el link del correo.
+    email_verified:      Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="true")
 
     def serialize(self):
         return {
@@ -50,6 +56,7 @@ class User(db.Model):
             "profile_picture_url": self.profile_picture_url,
             "birthdate":           self.birthdate,
             "phone":               self.phone,
+            "email_verified":      bool(self.email_verified),
             "created_at":          self.created_at.isoformat() + "Z" if self.created_at else None,
         }
 
@@ -82,6 +89,12 @@ class Event(db.Model):
     is_public:  Mapped[bool]  = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     creator_id: Mapped[int]   = mapped_column(ForeignKey("user.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
+    # Tanda 7B — Validación post-evento del creador:
+    #   None  → el evento aún no pasó, o pasó y el creador no respondió
+    #   True  → el creador confirmó que el evento se realizó como previsto
+    #   False → el creador indicó que NO se realizó (solo entonces se
+    #           permite borrarlo; ver delete_event en routes.py)
+    happened:   Mapped[bool]  = mapped_column(Boolean, nullable=True, default=None)
 
     creator:      Mapped["User"]       = relationship("User", foreign_keys=[creator_id])
     participants: Mapped[list["User"]] = relationship(
@@ -146,6 +159,8 @@ class Event(db.Model):
             "details":            self.details,
             "image":              self.image,
             "is_public":          bool(self.is_public),
+            # Tanda 7B — None | true | false (ver comentario en la columna).
+            "happened":           self.happened,
             "creator_id":         self.creator_id,
             "creator_username":   self.creator.username if self.creator else None,
             "creator_picture":    creator_picture,
@@ -244,7 +259,16 @@ class Friendship(db.Model):
         }
         if current_user_id is not None:
             other = self.addressee if self.requester_id == current_user_id else self.requester
-            data["friend"]    = {"id": other.id, "username": other.username} if other else None
+            # Tanda 7A — bio + foto del amigo para que las cartas de la
+            # página Friends muestren la primera frase de su descripción
+            # y su avatar real sin pedir el perfil completo uno a uno.
+            # Solo campos NO sensibles (nunca email/phone/birthdate).
+            data["friend"] = {
+                "id":                  other.id,
+                "username":            other.username,
+                "bio":                 other.bio,
+                "profile_picture_url": other.profile_picture_url,
+            } if other else None
             data["direction"] = "outgoing" if self.requester_id == current_user_id else "incoming"
         return data
 
@@ -533,6 +557,14 @@ class ChatMessage(db.Model):
 #     - "event_reminder"       payload: {event_id, event_title, event_date, event_time,
 #                                        hours_until}
 #                                        (sent by the dispatch-reminders cron endpoint)
+#     - "event_confirmation"   payload: {event_id, event_title, event_date, event_time,
+#                                        response?}
+#                                        (sent to the creator once the event is past,
+#                                         asking "did it happen as planned?". When the
+#                                         creator answers via PUT /events/<id>/confirm,
+#                                         the backend stamps payload.response = "yes"|"no"
+#                                         and marks the notif read — same keep-the-row
+#                                         pattern as friend_request.status)
 class Notification(db.Model):
     __tablename__ = "notification"
 
@@ -550,7 +582,8 @@ class Notification(db.Model):
             "type IN ("
             "'friend_request', 'event_invite', 'invite_suggestion', 'event_public', "
             "'friend_accepted', 'event_updated', 'event_cancelled', 'event_removed', "
-            "'rsvp_changed', 'suggestion_approved', 'suggestion_refused', 'event_reminder'"
+            "'rsvp_changed', 'suggestion_approved', 'suggestion_refused', 'event_reminder', "
+            "'event_confirmation'"
             ")",
             name="ck_notification_type",
         ),

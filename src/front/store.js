@@ -81,7 +81,9 @@ export const initialStore = () => {
   return {
     message: null,
     user: safeParse(localStorage.getItem("user")),
-    token: localStorage.getItem("token") || null,
+    // Tanda 7D — el JWT ya no vive ni en el store ni en localStorage:
+    // va en una cookie httpOnly (sq_access_token) que gestiona el
+    // navegador. La señal de sesión en UI es la presencia de `user`.
     todos: [
       { id: 1, title: "Make the bed", background: null },
       { id: 2, title: "Do my homework", background: null },

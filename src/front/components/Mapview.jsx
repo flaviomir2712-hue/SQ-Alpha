@@ -1,20 +1,37 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, Marker, useMapEvents } from "react-leaflet";
 import { useSearchParams } from "react-router-dom";
 import { Container, Spinner, Alert } from "react-bootstrap";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
+// Tanda 7G2 — Migración Leaflet → MapLibre GL.
+//
+// ¿Por qué? Los tiles de OpenStreetMap que usaba Leaflet son IMÁGENES
+// ya renderizadas: al rotar el mapa, los nombres de calles giraban con
+// él como una foto. MapLibre usa tiles VECTORIALES: las etiquetas son
+// texto que el renderizador mantiene siempre horizontal mientras giras
+// o inclinas — la rotación "como Google Maps" de verdad:
+//   - dos dedos en móvil/tablet → rota e inclina
+//   - click derecho + arrastrar (o Ctrl + arrastrar) en desktop → rota
+//   - brújula del control de navegación → click → norte arriba
+//
+// Tiles: OpenFreeMap (https://openfreemap.org) — gratuito, sin API key,
+// estilo "liberty" (aspecto OSM clásico, coherente con el mapa anterior).
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
 
 import useGlobalReducer from "../hooks/useGlobalReducer";
-import { createMarkerAvatar } from "./MarkerAvatar";
-import MapClickHandler from "./MapClickHandler";
+import { createMarkerAvatarElement } from "./MarkerAvatar";
 import { EventModal } from "./EventModal";
+// Tanda 7F2 — el mapa se refresca en tiempo real: ping "event:changed"
+// del socket (cambios de cualquier usuario afectado) + evento DOM local
+// (cambios hechos en este navegador desde modales fuera del mapa).
+import { getSocket, EVENTS_CHANGED_EVENT } from "../services/socket";
 import "./mapview.css";
+
+const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 
 // Hover rule for the marker tooltip — has to live in a stylesheet (CSS
 // rules don't run inline), so we inject it once via a <style> tag at the
 // top of the rendered tree. Everything else about the marker is inline
-// inside createMarkerAvatar to avoid cascade fights.
+// inside createMarkerAvatarElement to avoid cascade fights.
 //
 // COMPORTAMIENTO POR DISPOSITIVO:
 //   Desktop (hover disponible):
@@ -29,9 +46,8 @@ import "./mapview.css";
 //
 // La clase `.peeked` la añade/quita Mapview vía useEffect cuando
 // cambia el estado `peekedMarkerId`. Se busca el wrapper por
-// data-event-id (inyectado por createMarkerAvatar).
+// data-event-id (inyectado por createMarkerAvatarElement).
 const MARKER_HOVER_CSS = `
-.sq-marker-icon { background: transparent !important; border: 0 !important; }
 .sq-marker-wrapper:hover .sq-marker-tip-floater {
   opacity: 1 !important;
   transform: translateX(-50%) translateY(-2px) !important;
@@ -49,8 +65,6 @@ const MARKER_HOVER_CSS = `
 `;
 
 // Detecta si el dispositivo NO tiene capacidad de hover (móvil/tablet).
-// Calculada on-demand para soportar tablets que cambian de modo y
-// usuarios que rotan / conectan ratón externo.
 const isTouchDevice = () =>
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
@@ -58,8 +72,7 @@ const isTouchDevice = () =>
 
 // Selectores que indican que hay un overlay de Bootstrap abierto.
 // Usado para suprimir el map-click cuando el usuario hace clic en el
-// mapa para cerrar uno de estos overlays — sin el supress, el click
-// llegaría a Leaflet y abriría el modal de "crear evento".
+// mapa para cerrar uno de estos overlays.
 const OVERLAY_OPEN_SELECTOR =
   ".modal.show, .dropdown-menu.show, .offcanvas.show";
 const hasOpenOverlay = () =>
@@ -67,8 +80,12 @@ const hasOpenOverlay = () =>
   (document.body.classList.contains("modal-open") ||
     !!document.querySelector(OVERLAY_OPEN_SELECTOR));
 
+// Estado interno en [lat, lng] (igual que la era Leaflet y que la API
+// de geolocalización). MapLibre trabaja en [lng, lat] — se convierte
+// SOLO en la frontera con maplibre via toLngLat.
 const MADRID = [40.4168, -3.7038];
 const computeCenter = (userCenter) => userCenter || MADRID;
+const toLngLat = ([lat, lng]) => [lng, lat];
 
 const startOfDay = (d) => {
   const x = new Date(d);
@@ -100,41 +117,28 @@ const formatTooltip = (event) => {
   return [title, when, time].filter(Boolean).join(" · ");
 };
 
-// Blue "you are here" dot with a soft pulsing ring.
-const createUserDotIcon = () =>
-  L.divIcon({
-    html:
-      `<div style="position:relative;width:22px;height:22px;">` +
-      `<div style="position:absolute;inset:-12px;border-radius:50%;` +
-      `background:rgba(66,133,244,0.18);` +
-      `animation:sq-user-pulse 2s ease-out infinite;` +
-      `pointer-events:none;"></div>` +
-      `<div style="position:absolute;top:50%;left:50%;` +
-      `transform:translate(-50%,-50%);` +
-      `width:16px;height:16px;` +
-      `background:#4285f4;` +
-      `border:3px solid #fff;border-radius:50%;` +
-      `box-shadow:0 2px 6px rgba(0,0,0,0.45);` +
-      `"></div>` +
-      `</div>`,
-    className: "sq-user-dot-icon",
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
-  });
-
-// Manual-interaction detector. Lives inside MapContainer (react-leaflet
-// requires that for useMapEvents). Detects user drags and manual zooms,
-// filtering out programmatic moves via the isProgRef flag.
-const UserInteractionWatcher = ({ isProgRef, onUserInteract }) => {
-  useMapEvents({
-    dragstart: () => {
-      onUserInteract();
-    },
-    zoomstart: () => {
-      if (!isProgRef.current) onUserInteract();
-    },
-  });
-  return null;
+// Blue "you are here" dot with a soft pulsing ring — mismo HTML que la
+// versión Leaflet, ahora como elemento DOM para maplibregl.Marker.
+// OJO: sin `position` inline en el div exterior — MapLibre le aplica
+// .maplibregl-marker { position: absolute } y un position inline lo
+// pisaría, desanclando el dot de su lat/lng (ver MarkerAvatar.jsx).
+const createUserDotElement = () => {
+  const host = document.createElement("div");
+  host.innerHTML =
+    `<div style="width:22px;height:22px;">` +
+    `<div style="position:absolute;inset:-12px;border-radius:50%;` +
+    `background:rgba(66,133,244,0.18);` +
+    `animation:sq-user-pulse 2s ease-out infinite;` +
+    `pointer-events:none;"></div>` +
+    `<div style="position:absolute;top:50%;left:50%;` +
+    `transform:translate(-50%,-50%);` +
+    `width:16px;height:16px;` +
+    `background:#4285f4;` +
+    `border:3px solid #fff;border-radius:50%;` +
+    `box-shadow:0 2px 6px rgba(0,0,0,0.45);` +
+    `"></div>` +
+    `</div>`;
+  return host.firstElementChild;
 };
 
 // Predicate: does this event pass the current status filter?
@@ -143,9 +147,6 @@ const UserInteractionWatcher = ({ isProgRef, onUserInteract }) => {
 // "pending"    → show ONLY pending invitations (inverts the legacy hide).
 // "created"    → only events I created.
 // "going" / "maybe" / "not_going" → match against my_rsvp.
-//
-// Implemented as a free function so the visibleEvents useMemo stays
-// declarative and easy to read.
 const matchesStatusFilter = (event, statusFilter, myId) => {
   switch (statusFilter) {
     case "pending":
@@ -190,24 +191,17 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const [prefillCoords, setPrefillCoords] = useState(null);
 
   // ── UX two-tap (touch devices) ─────────────────────────────
-  // Cuando el dispositivo NO tiene hover, el primer tap en un
-  // marker NO abre el modal, solo "peek" (tooltip visible).
-  // El segundo tap sobre el MISMO marker abre el modal. Tap en
-  // mapa o en otro marker resetea/cambia el peek.
   const [peekedMarkerId, setPeekedMarkerId] = useState(null);
 
   // ── Suppress map-click cuando había overlay abierto ───────
-  // Si el usuario tiene un dropdown/modal/menú abierto y hace
-  // click en el mapa para cerrarlo, NO queremos que ese click
-  // también abra el modal de "crear evento". El click se usa
-  // SOLO para cerrar el overlay.
-  //
-  // Captura el estado en mousedown (capture phase) — eso ocurre
-  // ANTES de que Bootstrap procese el click y cierre el overlay,
-  // así el ref refleja "había overlay abierto al iniciar el tap".
   const overlayWasOpenRef = useRef(false);
 
+  // MapLibre se gestiona imperativamente: el mapa, el dot del usuario
+  // y los markers viven en refs; React solo decide QUÉ markers existen.
+  const containerRef = useRef(null);
   const mapRef = useRef(null);
+  const markersRef = useRef([]);
+  const userMarkerRef = useRef(null);
 
   const [followUser, setFollowUserState] = useState(true);
   const followUserRef = useRef(true);
@@ -223,6 +217,14 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const pendingFocusIdRef = useRef(null);
   const [forceShowEventId, setForceShowEventId] = useState(null);
 
+  // Los handlers de click del mapa/markers se registran UNA vez sobre
+  // el mapa imperativo, pero cierran sobre estado de React que cambia:
+  // refs siempre actualizadas al último render (patrón estándar para
+  // integrar librerías imperativas).
+  const handleMapClickRef = useRef(() => {});
+  const handleMarkerClickRef = useRef(() => {});
+  const handleUserInteractRef = useRef(() => {});
+
   useEffect(() => {
     const raw = searchParams.get("event");
     if (!raw) return;
@@ -233,9 +235,17 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const currentUser = JSON.parse(localStorage.getItem("user") || "null");
   const myId = currentUser?.id ?? null;
 
+  // Tanda 7H — flag de vida del componente para cancelar los reintentos
+  // de fetchEvents al desmontar, + tope de reintentos.
+  const MAX_FETCH_RETRIES = 4;
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => { aliveRef.current = false; };
+  }, []);
+
   const fetchEvents = async () => {
     const apiUrl = import.meta.env.VITE_BACKEND_URL;
-    const token = localStorage.getItem("token");
     if (!apiUrl) {
       setError("VITE_BACKEND_URL is missing from the frontend .env");
       setLoading(false);
@@ -244,18 +254,24 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setLoading(true);
     setError(null);
 
+    // Tanda 7H — retry con TOPE y cancelable (antes: for(;;) infinito
+    // sin flag de desmontaje — con el backend caído seguía reintentando
+    // y haciendo setState sobre un componente muerto para siempre).
     let delay = 400;
-    for (; ;) {
+    for (let attempt = 0; attempt <= MAX_FETCH_RETRIES; attempt++) {
+      if (!aliveRef.current) return; // desmontado → abandonar en silencio
       try {
-        const res = await fetch(`${apiUrl}/api/events`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
+        // Tanda 7D — la autenticación viaja en la cookie httpOnly que
+        // añade el parche global de fetch (services/auth.js).
+        const res = await fetch(`${apiUrl}/api/events`);
+        if (!aliveRef.current) return;
         if (!res.ok) {
           setError(`Failed to fetch events (${res.status})`);
           setLoading(false);
           return;
         }
         const data = await res.json();
+        if (!aliveRef.current) return;
         const normalized = data
           .filter((e) => e.latitude != null && e.longitude != null)
           .map((e) => ({ ...e, position: [e.latitude, e.longitude] }));
@@ -267,7 +283,56 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
         delay = Math.min(delay * 2, 4000);
       }
     }
+    // Reintentos agotados: NO se vacía nada — los markers que ya estaban
+    // siguen en pantalla; el socket o el próximo aviso reintentarán.
+    if (aliveRef.current) {
+      setLoading(false);
+      setError("Could not reach the server — showing the last loaded events.");
+    }
   };
+
+  // ── EFFECT: crear el mapa UNA vez ──────────────────────────
+  useEffect(() => {
+    if (mapRef.current || !containerRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: MAP_STYLE,
+      center: toLngLat(computeCenter(null)), // Madrid hasta el primer fix GPS
+      zoom: 13,
+    });
+
+    // Zoom +/- , brújula (click → norte arriba) y pitch. La brújula
+    // también sirve de indicador de rotación, como en Google Maps.
+    map.addControl(
+      new maplibregl.NavigationControl({ visualizePitch: true }),
+      "top-right"
+    );
+
+    // Click en el mapa (los clicks sobre markers NO llegan aquí: los
+    // markers son elementos DOM superpuestos al canvas).
+    map.on("click", (e) => {
+      handleMapClickRef.current({
+        latitude: e.lngLat.lat,
+        longitude: e.lngLat.lng,
+      });
+    });
+
+    // Interacción manual → desactiva el follow del GPS. Rotar/inclinar
+    // NO desactiva el follow (no cambia el centro).
+    map.on("dragstart", () => handleUserInteractRef.current());
+    map.on("zoomstart", () => {
+      if (!isProgrammaticMoveRef.current) handleUserInteractRef.current();
+    });
+
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      markersRef.current = [];
+      userMarkerRef.current = null;
+    };
+  }, []);
 
   // geolocation: watchPosition + one-time auto-center on first fix
   useEffect(() => {
@@ -282,7 +347,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
         if (!hasAutoCenteredRef.current && mapRef.current) {
           isProgrammaticMoveRef.current = true;
-          mapRef.current.flyTo(next, 14, { duration: 0.8 });
+          mapRef.current.flyTo({ center: toLngLat(next), zoom: 14, duration: 800 });
           hasAutoCenteredRef.current = true;
           setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
         }
@@ -316,7 +381,11 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
 
     setFollowUser(false);
     isProgrammaticMoveRef.current = true;
-    mapRef.current.flyTo([target.latitude, target.longitude], 15, { duration: 1 });
+    mapRef.current.flyTo({
+      center: [target.longitude, target.latitude],
+      zoom: 15,
+      duration: 1000,
+    });
     setTimeout(() => { isProgrammaticMoveRef.current = false; }, 1100);
 
     setForceShowEventId(targetId);
@@ -330,40 +399,66 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   }, [events]);
 
   // follow effect: pan to the user on each GPS update (follow ON only).
-  // Skip while a programmatic move (initial auto-center, FiHome recenter)
-  // is in flight — otherwise a concurrent panTo would interrupt the
-  // flyTo animation half-way and the recenter would visually stop short.
   useEffect(() => {
     if (!followUser || !userCenter || !mapRef.current) return;
     if (!hasAutoCenteredRef.current) return;
     if (isProgrammaticMoveRef.current) return;
-    mapRef.current.panTo(userCenter, { animate: true, duration: 0.5 });
+    mapRef.current.panTo(toLngLat(userCenter), { duration: 500 });
   }, [userCenter, followUser]);
 
-  // ─────────────────────────────────────────────────────────────
+  // ── EFFECT: dot azul "you are here" ────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!userCenter) {
+      if (userMarkerRef.current) {
+        userMarkerRef.current.remove();
+        userMarkerRef.current = null;
+      }
+      return;
+    }
+    if (!userMarkerRef.current) {
+      userMarkerRef.current = new maplibregl.Marker({
+        element: createUserDotElement(),
+        anchor: "center",
+      })
+        .setLngLat(toLngLat(userCenter))
+        .addTo(map);
+    } else {
+      userMarkerRef.current.setLngLat(toLngLat(userCenter));
+    }
+  }, [userCenter]);
+
   // Listen for "recenter" requests from the pill-nav Home button.
-  // The store nonce is bumped each click; we re-run on every change
-  // and skip the initial 0 (which would otherwise auto-fire on mount).
-  // recenterOnUser is intentionally NOT in the deps — it's a stable
-  // closure over mapRef / userCenter / followUser refs+state, and the
-  // existing useEffects in this file follow the same convention.
-  // ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!recenterMapNonce) return;
     recenterOnUser();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recenterMapNonce]);
 
-  const mapCenter = useMemo(() => computeCenter(userCenter), [userCenter]);
+  // ── EFFECT (Tanda 7F2): refresco en tiempo real de los eventos ──
+  // 1. "event:changed" (socket): el backend lo emite a la audiencia del
+  //    evento (creador, participantes, invitados, amigos si es público)
+  //    al crear/editar/borrar/responder/confirmar → refetch inmediato.
+  // 2. EVENTS_CHANGED_EVENT (window): disparado por modales locales que
+  //    no viven en el mapa (el "+" del pill nav) → el evento recién
+  //    creado aparece al instante aunque el socket esté caído.
+  useEffect(() => {
+    const refresh = () => fetchEvents();
+
+    window.addEventListener(EVENTS_CHANGED_EVENT, refresh);
+    const socket = getSocket();
+    if (socket) socket.on("event:changed", refresh);
+
+    return () => {
+      window.removeEventListener(EVENTS_CHANGED_EVENT, refresh);
+      if (socket) socket.off("event:changed", refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Combined filter pipeline. `forceShowEventId` always wins so the deep-link
   // ?event=<id> can never be hidden by the navbar filters.
-  // Otherwise the event must pass every dimension:
-  //   1. not in the past (unless the time filter is "Today" / value === 0,
-  //      in which case events with days === 0 are kept; older still hidden)
-  //   2. within the look-ahead window if mapFilterDays !== null
-  //   3. visibility (all / public / private)
-  //   4. status   (all / going / maybe / not_going / pending / created)
   const visibleEvents = useMemo(() => {
     return events.filter((e) => {
       if (e.id === forceShowEventId) return true;
@@ -375,10 +470,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
         if (mapFilterDays !== null && days > mapFilterDays) return false;
       }
 
-      // Visibility (public / private / all)
       if (!matchesVisibilityFilter(e, mapFilterVisibility)) return false;
-
-      // My status / RSVP / creator
       if (!matchesStatusFilter(e, mapFilterStatus, myId)) return false;
 
       return true;
@@ -392,16 +484,44 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     forceShowEventId,
   ]);
 
+  // ── EFFECT: sincronizar markers de eventos ─────────────────
+  // Reconstrucción completa en cada cambio de visibleEvents: son
+  // elementos DOM baratos (decenas, no miles) y así el contenido
+  // (going count, tooltip, foto) nunca queda desactualizado.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    markersRef.current.forEach((m) => m.remove());
+    markersRef.current = [];
+
+    visibleEvents.forEach((event) => {
+      const el = createMarkerAvatarElement(
+        event,
+        56,
+        event.going_count || 0,
+        formatTooltip(event)
+      );
+      // stopPropagation: que el tap en un marker jamás dispare también
+      // el click del mapa (que abriría el modal de crear evento).
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        handleMarkerClickRef.current(event);
+      });
+
+      const marker = new maplibregl.Marker({ element: el, anchor: "bottom" })
+        .setLngLat([event.longitude, event.latitude])
+        .addTo(map);
+      markersRef.current.push(marker);
+    });
+  }, [visibleEvents]);
+
   const handleUserInteract = () => {
     if (followUserRef.current) setFollowUser(false);
   };
+  handleUserInteractRef.current = handleUserInteract;
 
   // ── EFFECT: capturar si había overlay abierto al mousedown ──
-  // Capture-phase listener: fire ANTES de que Bootstrap procese
-  // el click y haga `.hide()` del dropdown/modal. Esto garantiza
-  // que `overlayWasOpenRef.current` refleja el estado REAL al
-  // inicio del tap del usuario, no el resultante.
-  // Cubrimos mousedown (escritorio) + touchstart (móvil).
   useEffect(() => {
     const capture = () => {
       overlayWasOpenRef.current = hasOpenOverlay();
@@ -415,15 +535,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   }, []);
 
   // ── EFFECT: aplicar/quitar la clase .peeked al marker DOM ──
-  // Cuando cambia `peekedMarkerId`, busca el marker correspondiente
-  // por su data-event-id (atributo inyectado por createMarkerAvatar)
-  // y le pone/quita la clase .peeked. La CSS de MARKER_HOVER_CSS
-  // hace que esa clase vuelva el tooltip visible en touch devices.
-  //
-  // Limpia el peeked anterior antes de aplicar el nuevo, por si el
-  // usuario tap-eó otro marker (cambiamos foco sin pasar por null).
   useEffect(() => {
-    // Clear all current .peeked first (defensivo)
     document.querySelectorAll(".sq-marker-wrapper.peeked")
       .forEach((el) => el.classList.remove("peeked"));
     if (peekedMarkerId != null) {
@@ -437,28 +549,24 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const recenterOnUser = () => {
     if (!mapRef.current) return;
 
-    // DIAGNOSTIC LOG — confirms the function is actually invoked on
-    // each FiHome click. Safe to remove once we know the flow works.
-    console.log("[Mapview] recenter requested", {
-      hasUserCenter: !!userCenter,
-      followUser,
-    });
-
     isProgrammaticMoveRef.current = true;
     setFollowUser(true);
 
-    // 1) Immediate visual feedback using the cached fix (if any). The
-    //    user sees the map start moving right away instead of waiting
-    //    for getCurrentPosition to return.
+    // 1) Feedback inmediato con el fix cacheado (si lo hay). De paso
+    //    devolvemos el norte arriba (bearing 0) — gesto Google Maps.
     if (userCenter) {
-      mapRef.current.flyTo(userCenter, 15, { duration: 0.8 });
+      mapRef.current.flyTo({
+        center: toLngLat(userCenter),
+        zoom: 15,
+        bearing: 0,
+        pitch: 0,
+        duration: 800,
+      });
     }
 
-    // 2) Background refresh with maximumAge:0 — watchPosition can stall
-    //    on mobile (screen sleep, backgrounded tab, throttled by the
-    //    OS). A one-shot getCurrentPosition forces a fresh reading and
-    //    updates userCenter so the next pan/render targets the user's
-    //    actual current location, not a stale cache.
+    // 2) Refresco en segundo plano con maximumAge:0 — watchPosition se
+    //    puede quedar congelado en móvil (pantalla dormida, pestaña en
+    //    background); un getCurrentPosition fuerza lectura fresca.
     if (!navigator.geolocation) {
       setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
       return;
@@ -471,13 +579,15 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
         setUserCenter(next);
         if (mapRef.current) {
           if (hadCache) {
-            // We already flew to the cache above. Refine to the fresh
-            // fix with a gentle panTo — re-flying would interrupt the
-            // first animation and look glitchy.
-            mapRef.current.panTo(next, { animate: true });
+            mapRef.current.panTo(toLngLat(next), { duration: 400 });
           } else {
-            // No cache was available — this is our first animation.
-            mapRef.current.flyTo(next, 15, { duration: 0.8 });
+            mapRef.current.flyTo({
+              center: toLngLat(next),
+              zoom: 15,
+              bearing: 0,
+              pitch: 0,
+              duration: 800,
+            });
           }
         }
         setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
@@ -495,17 +605,13 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   };
 
   const handleMapClick = (coords) => {
-    // ── SUPPRESS: si había un overlay abierto al iniciar el tap
-    //   (hamburger menu, notificaciones, modal de chat, dropdown
-    //    de filtros, etc.), este click se usa SOLO para cerrarlo.
-    //   No abrimos el modal de crear evento. Consumimos el flag.
+    // ── SUPPRESS: si había un overlay abierto al iniciar el tap,
+    //   este click se usa SOLO para cerrarlo.
     if (overlayWasOpenRef.current) {
       overlayWasOpenRef.current = false;
       return;
     }
-    // También limpiamos cualquier marker "peeked" — si el usuario
-    // tocó un marker (tooltip visible) y ahora toca fuera, quiere
-    // salir de ese estado.
+    // También limpiamos cualquier marker "peeked".
     if (peekedMarkerId != null) setPeekedMarkerId(null);
 
     setActiveEventId(null);
@@ -513,13 +619,10 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setModalOpen(true);
     onMapClick && onMapClick(coords);
   };
+  handleMapClickRef.current = handleMapClick;
 
   const handleMarkerClick = (event) => {
     // ── TWO-TAP en touch devices ──
-    // 1er tap → solo "peek" (tooltip visible).
-    // 2º tap sobre el MISMO marker → abre modal.
-    // Desktop (con hover) → siempre abre modal directamente (el
-    // hover ya da el tooltip, no hace falta peek).
     if (isTouchDevice()) {
       const alreadyPeeked = peekedMarkerId === event.id;
       if (!alreadyPeeked) {
@@ -536,6 +639,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setModalOpen(true);
     onMarkerClick && onMarkerClick(event);
   };
+  handleMarkerClickRef.current = handleMarkerClick;
 
   const handleClose = () => {
     setModalOpen(false);
@@ -569,48 +673,11 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           width: "100%",
         }}
       >
-        <MapContainer
-          center={mapCenter}
-          zoom={13}
+        <div
+          ref={containerRef}
+          className="sq-maplibre-container"
           style={{ height: "100%", width: "100%" }}
-          scrollWheelZoom={true}
-          ref={mapRef}
-        >
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          />
-
-          <MapClickHandler onMapClick={handleMapClick} />
-
-          <UserInteractionWatcher
-            isProgRef={isProgrammaticMoveRef}
-            onUserInteract={handleUserInteract}
-          />
-
-          {userCenter && (
-            <Marker
-              position={userCenter}
-              icon={createUserDotIcon()}
-              interactive={false}
-              keyboard={false}
-            />
-          )}
-
-          {visibleEvents.map((event) => (
-            <Marker
-              key={event.id}
-              position={event.position}
-              icon={createMarkerAvatar(
-                event,
-                56,
-                event.going_count || 0,
-                formatTooltip(event)
-              )}
-              eventHandlers={{ click: () => handleMarkerClick(event) }}
-            />
-          ))}
-        </MapContainer>
+        />
       </div>
 
       <EventModal

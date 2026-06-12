@@ -1,18 +1,20 @@
+import { clearSession } from "./auth";
+
 const BASE = import.meta.env.VITE_BACKEND_URL;
 
-const buildHeaders = (extra = {}) => {
-  const token = localStorage.getItem("token");
-  return {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...extra,
-  };
-};
+// Tanda 7D — la autenticación ya no viaja en un header Bearer construido
+// aquí: la cookie httpOnly y el header X-CSRF-TOKEN los añade el parche
+// global de fetch (services/auth.js). Aquí solo queda el Content-Type.
+const buildHeaders = (extra = {}) => ({
+  "Content-Type": "application/json",
+  ...extra,
+});
 
 const handleResponse = async (res) => {
   if (res.status === 401) {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    // La cookie de sesión expiró o fue revocada — limpiamos la sesión
+    // local (user + csrf) y mandamos a login.
+    clearSession();
     if (!window.location.pathname.includes("/login")) {
       window.location.href = "/login";
     }

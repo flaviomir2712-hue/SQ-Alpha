@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
 	Container,
 	Card,
@@ -12,6 +12,7 @@ import useGlobalReducer from "../hooks/useGlobalReducer";
 import { FiAtSign, FiLock, FiLogIn } from "react-icons/fi";
 import logoSideQuest from "../assets/img/logoSideQuest.png";
 import { ResetPasswordModal } from "../components/ResetPasswordModal";
+import { setSession } from "../services/auth";
 
 // Style coherent avec Friends / Profile / EventModal (dark mode, accents indigo)
 const AUTH_CSS = `
@@ -71,30 +72,21 @@ const AUTH_CSS = `
 .sq-auth-link:hover { color: #ec4899; }
 `;
 
-// Persist the logged-in user safely. Refuses to write anything that isn't
-// a plain object (so we never end up with the literal string "undefined"
-// in localStorage, which crashes initialStore on next boot).
-const safePersistUser = (user) => {
-	if (user && typeof user === "object") {
-		localStorage.setItem("user", JSON.stringify(user));
-		return true;
-	}
-	localStorage.removeItem("user");
-	return false;
-};
-
-const safePersistToken = (token) => {
-	if (typeof token === "string" && token.length > 0) {
-		localStorage.setItem("token", token);
-		return true;
-	}
-	localStorage.removeItem("token");
-	return false;
-};
+// Tanda 7D — el JWT llega ahora en una cookie httpOnly (Set-Cookie del
+// backend, gestionada por el navegador): aquí ya NO se persiste ningún
+// token. setSession guarda solo el user (datos de UI) y el csrf_token
+// (anti-CSRF double-submit, inútil sin la cookie). El `token` que el
+// backend sigue devolviendo en el body es para Postman/clientes API y
+// se ignora a propósito.
 
 export const Login = () => {
 	const navigate = useNavigate();
 	const { dispatch } = useGlobalReducer();
+
+	// Tanda 7E — el link de verificación del email redirige aquí con
+	// ?verified=1 (ok) o ?verified=0 (token inválido/caducado).
+	const [searchParams] = useSearchParams();
+	const verified = searchParams.get("verified");
 
 	const [identifier, setIdentifier] = useState("");
 	const [showReset, setShowReset] = useState(false);
@@ -126,11 +118,14 @@ export const Login = () => {
 			// Guard: refuse to persist incomplete responses. Without this an
 			// unexpected payload (e.g. backend hiccup) would write the literal
 			// string "undefined" to localStorage and break the next boot.
-			if (!safePersistToken(data.token) || !safePersistUser(data.user)) {
-				setError("Invalid response from server (missing token or user)");
+			if (!data.user || typeof data.user !== "object") {
+				setError("Invalid response from server (missing user)");
 				return;
 			}
 
+			// Tanda 7D — la cookie httpOnly ya quedó guardada por el
+			// navegador (el fetch parcheado manda credentials: "include").
+			setSession(data.user, data.csrf_token);
 			dispatch({ type: "set_user", payload: data.user });
 			navigate("/app");
 		} catch (err) {
@@ -155,6 +150,18 @@ export const Login = () => {
 								style={{ filter: "brightness(0) invert(1)", height: "60px", width: "auto" }} />
 						</h2>
 						<p className="text-center text-secondary mb-4">Welcome back to your SideQuest!</p>
+
+						{/* Tanda 7E — resultado del click en el link del email */}
+						{verified === "1" && (
+							<Alert variant="success">
+								Email confirmed! You can now log in.
+							</Alert>
+						)}
+						{verified === "0" && (
+							<Alert variant="warning">
+								That verification link is invalid or has expired.
+							</Alert>
+						)}
 
 						{error && (
 							<Alert variant="danger" onClose={() => setError("")} dismissible>

@@ -1,20 +1,22 @@
 /* src/front/components/mapview.css
    ────────────────────────────────────────────────────────────────────
-   Marker visual is 100% INLINE inside the divIcon HTML built by
-   MarkerAvatar.createMarkerAvatar(). This file deliberately does NOT
-   define .avatar-marker* / .sq-marker-* rules — putting them here used
-   to leak through the CSS cascade and stretch the marker when the cover
-   photo had a wide / portrait aspect ratio. The only marker-related
-   rule that has to live in a stylesheet is the :hover selector for the
-   tooltip, and that one is injected by Mapview.jsx as a <style> tag
+   Tanda 7G2 — Migración Leaflet → MapLibre GL.
+
+   Marker visual is 100% INLINE inside the DOM element built by
+   MarkerAvatar.createMarkerAvatarElement(). This file deliberately does
+   NOT define .sq-marker-* rules — putting them here used to leak through
+   the CSS cascade and stretch the marker when the cover photo had a
+   wide / portrait aspect ratio. The only marker-related rule that has
+   to live in a stylesheet is the :hover selector for the tooltip, and
+   that one is injected by Mapview.jsx as a <style> tag
    (`MARKER_HOVER_CSS`) right next to the component that owns it.
 
    What stays here:
      - .map-page                — page background / layout
-     - .sq-map-wrapper          — Leaflet container wrapper
-     - .leaflet-container       — Leaflet default canvas
-     - .sq-user-dot-icon        — neutralise Leaflet wrapper for the user dot
+     - .sq-map-wrapper          — map container wrapper
+     - .sq-maplibre-container   — MapLibre canvas host
      - @keyframes sq-user-pulse — the "you are here" pulsing ring
+     - dark-theme tweaks for the MapLibre navigation control
    ──────────────────────────────────────────────────────────────────── */
 
 .map-page {
@@ -33,23 +35,44 @@
   width: 100%;
 }
 
-/* Leaflet container fills its parent — clicks work. */
-.leaflet-container {
+/* MapLibre host fills its parent — clicks work. */
+.sq-maplibre-container {
   background: #0b0d12;
-  cursor: crosshair;
   height: 100%;
   width: 100%;
 }
 
-/* ── User location dot ── */
-.sq-user-dot-icon {
-  background: transparent !important;
-  border: 0 !important;
+/* Crosshair sobre el canvas: señal de "click para crear evento",
+   igual que hacía el cursor del contenedor Leaflet. */
+.sq-maplibre-container .maplibregl-canvas-container {
+  cursor: crosshair;
 }
+
+/* ── User location dot ── */
 @keyframes sq-user-pulse {
   0%   { transform: scale(0.8); opacity: 0.8; }
   70%  { transform: scale(1.6); opacity: 0;   }
   100% { transform: scale(1.6); opacity: 0;   }
+}
+
+/* ── Navigation control (zoom / brújula) en tema oscuro ──
+   Por defecto MapLibre lo pinta blanco; lo integramos con la paleta
+   de la app (mismos tonos que navbar / cards). */
+.maplibregl-ctrl-group {
+  background: rgba(22, 25, 34, 0.92) !important;
+  border: 1px solid #262a36;
+  border-radius: 10px !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45) !important;
+}
+.maplibregl-ctrl-group button {
+  background: transparent !important;
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid #262a36 !important;
+}
+/* Iconos (SVG embebidos como background) en claro para fondo oscuro. */
+.maplibregl-ctrl button .maplibregl-ctrl-icon {
+  filter: invert(0.85) hue-rotate(180deg);
 }
 
 /* Note: the old .sq-recenter-btn floating button has been removed.

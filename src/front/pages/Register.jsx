@@ -8,7 +8,7 @@ import {
 	Alert,
 	Spinner,
 } from "react-bootstrap";
-import { FiMail, FiLock, FiUserPlus, FiAtSign } from "react-icons/fi";
+import { FiMail, FiLock, FiUserPlus, FiAtSign, FiCheckCircle } from "react-icons/fi";
 import logoSideQuest from "../assets/img/logoSideQuest.png";
 import { ResetPasswordModal } from "../components/ResetPasswordModal";
 
@@ -105,6 +105,10 @@ export const Register = () => {
 	const navigate = useNavigate();
 
 	const [showReset, setShowReset] = useState(false);
+	// Tanda 7E — tras crear la cuenta mostramos la pantalla "revisa tu
+	// correo" (con el aviso de verificación) en vez de saltar a /login.
+	const [registered, setRegistered] = useState(false);
+	const [emailSent, setEmailSent] = useState(false);
 	const [email, setEmail] = useState("");
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
@@ -148,6 +152,14 @@ export const Register = () => {
 			return;
 		}
 
+		// Tanda 7D — espejo de la validación nueva del backend (que antes
+		// aceptaba contraseñas de 1 carácter). Feedback inmediato sin
+		// round-trip.
+		if ((password || "").length < 6) {
+			setError("Password must be at least 6 characters.");
+			return;
+		}
+
 		setLoading(true);
 
 		try {
@@ -167,7 +179,10 @@ export const Register = () => {
 				return;
 			}
 
-			navigate("/login");
+			// Tanda 7E — el backend dice si pudo enviar el email de
+			// confirmación; mostramos la pantalla de éxito acorde.
+			setEmailSent(!!data.verification_email_sent);
+			setRegistered(true);
 		} catch (err) {
 			console.error("Register error:", err);
 			setError("Server error");
@@ -192,6 +207,32 @@ export const Register = () => {
 						</h2>
 						<p className="text-center text-secondary mb-4">Your SideQuest waits for you!</p>
 
+						{/* Tanda 7E — pantalla de éxito post-registro */}
+						{registered ? (
+							<div className="text-center py-3">
+								<FiCheckCircle size={44} color="#22c55e" className="mb-3" />
+								<h5 className="mb-2">Account created!</h5>
+								{emailSent ? (
+									<p className="text-secondary mb-3">
+										We've sent a confirmation link to{" "}
+										<strong className="text-light">{email}</strong>.
+										Check your inbox (and spam folder) to verify your
+										email — meanwhile you can already log in.
+									</p>
+								) : (
+									<p className="text-secondary mb-3">
+										You can now log in with your new account.
+									</p>
+								)}
+								<Button
+									className="sq-auth-submit w-100 py-2"
+									onClick={() => navigate("/login")}
+								>
+									Go to login
+								</Button>
+							</div>
+						) : (
+						<>
 						{error && (
 							<Alert variant="danger" onClose={() => setError("")} dismissible>
 								{error}
@@ -310,6 +351,8 @@ export const Register = () => {
 								Forgot your password?
 							</button>
 						</div>
+						</>
+						)}
 					</Card>
 				</Container>
 			</div>

@@ -1,7 +1,9 @@
 import { Outlet, useLocation } from "react-router-dom";
 import ScrollToTop from "../components/ScrollToTop";
 import { Navbar } from "../components/Navbar";
-import { Footer } from "../components/Footer";
+// Tanda 7H — Footer.jsx eliminado: era un editor de perfil completo
+// (17KB, con fetches a /profile/me) que se importaba aquí pero NUNCA
+// se renderizaba. El footer real de la app es SiteFooter.
 import { BottomNavbar } from "../components/ButtonNavbar";
 import { SiteFooter } from "../components/SiteFooter";
 import { Onboarding } from "../components/Onboarding";
@@ -16,7 +18,14 @@ const NAV_FREE_PATHS = ["/", "/login", "/register"];
 
 export const Layout = () => {
     const location = useLocation();
-    const hideNav = NAV_FREE_PATHS.includes(location.pathname);
+    // Tanda 7E — /reset-password/<token> es otra pantalla auth
+    // fullscreen (llega desde el link del email, sin sesión): también
+    // va sin navbars. startsWith porque lleva el token en el path.
+    const hideNav =
+        NAV_FREE_PATHS.includes(location.pathname) ||
+        // Tanda 7H — sin barra final: el token ahora va en query string
+        // (el path es exactamente /reset-password).
+        location.pathname.startsWith("/reset-password");
 
     return (
         <ScrollToTop>

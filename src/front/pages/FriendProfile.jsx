@@ -142,6 +142,13 @@ const PROFILE_CSS = `
 .activity-bar .progress-bar { background: linear-gradient(90deg, #6366f1, #ec4899); }
 .info-line { color: #adb5bd; }
 .info-line svg { color: #6366f1; }
+
+/* Tanda 7C — Reward por actividad: el aro del avatar del amigo refleja
+   su nivel. Misma paleta que el Badge del activity bar (levelColor):
+   secondary → gris, info → cian, success → verde. */
+.profile-hero-avatar.level-low    { border-color: #6c757d; }
+.profile-hero-avatar.level-active { border-color: #22d3ee; box-shadow: 0 0 14px rgba(34, 211, 238, 0.35); }
+.profile-hero-avatar.level-very   { border-color: #22c55e; box-shadow: 0 0 16px rgba(34, 197, 94, 0.45); }
 `;
 
 // =============================================================
@@ -165,6 +172,14 @@ const levelColor = (level) => {
   if (level === "Very active") return "success";
   if (level === "Active") return "info";
   return "secondary";
+};
+
+// Tanda 7C — clase CSS del aro-reward del avatar según nivel de actividad.
+// Mapea 1:1 con los strings que devuelve el backend (_compute_stats).
+const levelRingClass = (level) => {
+  if (level === "Very active") return "level-very";
+  if (level === "Active") return "level-active";
+  return "level-low";
 };
 
 // =============================================================
@@ -392,15 +407,17 @@ export const FriendProfile = () => {
               <Card.Body>
                 <Row className="align-items-center g-4">
                   <Col xs={12} md="auto" className="text-center">
+                    {/* Tanda 7C — el aro del avatar muestra la reward de
+                        actividad del amigo. */}
                     {profile.profile_picture_url ? (
                       <img
                         src={profile.profile_picture_url}
                         alt="profile"
-                        className="profile-hero-avatar"
+                        className={`profile-hero-avatar ${levelRingClass(stats?.activity_level)}`}
                         onError={(e) => { e.target.style.display = "none"; }}
                       />
                     ) : (
-                      <div className="profile-hero-avatar profile-hero-fallback">
+                      <div className={`profile-hero-avatar profile-hero-fallback ${levelRingClass(stats?.activity_level)}`}>
                         {initials(profile)}
                       </div>
                     )}

@@ -12,6 +12,12 @@ import {
 import useGlobalReducer from "../hooks/useGlobalReducer.jsx";
 import { useChat } from "../hooks/useChat.jsx";
 import { api } from "../services/api";
+// Tanda 7F2 — la lista de rooms de esta página era estado LOCAL con un
+// poll de 5s y sin suscripción al socket: el hilo abierto se actualizaba
+// en vivo (useChat), pero la columna de conversaciones (previews, no
+// leídos, orden) no. Ahora escucha el mismo ping "chat:message" que el
+// Navbar.
+import { getSocket } from "../services/socket";
 
 import "./messages.css";
 
@@ -134,23 +140,41 @@ const Messages = () => {
   const mediaRecRef   = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // ── Load rooms + poll ─────────────────────────────
+  // ── Load rooms + socket + poll (fallback) ─────────
+  // Tanda 7F2 — el ping "chat:message" del socket refresca la columna
+  // al instante (preview, contador de no leídos, orden); el intervalo
+  // baja de 5s a 30s y queda solo como red de seguridad.
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
         const data = await api.get("/chat/rooms");
-        if (alive) setRooms(Array.isArray(data) ? data : []);
+        if (alive && Array.isArray(data)) setRooms(data);
       } catch (e) {
+        // Tanda 7F2 — fallo TRANSITORIO (blip de red, proxy, backend
+        // reiniciando): conservamos la última lista buena en vez de
+        // vaciarla. El setRooms([]) anterior hacía desaparecer la
+        // columna Y el hilo abierto (selectedRoom se deriva de rooms)
+        // en cada poll fallido, y reaparecían al siguiente — el
+        // "parpadeo" de la página. El próximo load (socket o poll de
+        // fallback) ya la refrescará.
         console.error("load rooms:", e);
-        if (alive) setRooms([]);
       } finally {
         if (alive) setLoadingList(false);
       }
     };
     load();
-    const t = setInterval(load, 5000);
-    return () => { alive = false; clearInterval(t); };
+    const t = setInterval(load, 30000);
+
+    const socket = getSocket();
+    const onChatPing = () => load();
+    if (socket) socket.on("chat:message", onChatPing);
+
+    return () => {
+      alive = false;
+      clearInterval(t);
+      if (socket) socket.off("chat:message", onChatPing);
+    };
   }, []);
 
   // ── Debounced search ──────────────────────────────
@@ -230,9 +254,19 @@ const Messages = () => {
     e.target.value = "";
     if (!file) return;
     try {
-      const dataUrl = await fileToDataURL(file);
-      await sendMessage({ media_url: dataUrl, media_type: "image" });
-    } catch (err) { console.error("image:", err); }
+      // Tanda 7V — antes esta página mandaba el archivo SIN comprimir y
+      // en base64 directo a la base. Ahora: comprime + sube a Cloudinary
+      // y el mensaje guarda solo la URL (fallback base64 si falla).
+      const { compressAndUpload } = await import("../utils/uploadImage");
+      const mediaUrl = await compressAndUpload(file, "chat");
+      await sendMessage({ media_url: mediaUrl, media_type: "image" });
+    } catch (err) {
+      console.error("image:", err);
+      try {
+        const dataUrl = await fileToDataURL(file);
+        await sendMessage({ media_url: dataUrl, media_type: "image" });
+      } catch (err2) { console.error("image fallback:", err2); }
+    }
   };
 
   // ── Audio recording ──────────────────────────────
@@ -252,8 +286,14 @@ const Messages = () => {
         if (!chunks.length || !selectedRoomId) return;
         try {
           const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          // Tanda 7V — audio a Cloudinary; fallback base64 si falla.
           const dataUrl = await fileToDataURL(blob);
-          await sendMessage({ media_url: dataUrl, media_type: "audio" });
+          let mediaUrl = dataUrl;
+          try {
+            const { uploadMedia } = await import("../utils/uploadImage");
+            mediaUrl = await uploadMedia(dataUrl, "audio");
+          } catch (_) { /* fallback base64 */ }
+          await sendMessage({ media_url: mediaUrl, media_type: "audio" });
         } catch (err) { console.error("audio:", err); }
       };
       mediaRecRef.current = recorder;

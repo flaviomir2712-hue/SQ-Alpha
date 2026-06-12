@@ -22,6 +22,9 @@ import Messages from "./pages/Messages";
 import { Terms } from "./pages/Terms";
 import { Privacy } from "./pages/Privacy";
 import { LegalNotice } from "./pages/LegalNotice";
+// Tanda 7E — destino del link de recuperación de contraseña que llega
+// por email (token firmado, caduca en 1 h). Página pública.
+import { ResetPassword } from "./pages/ResetPassword";
 
 export const router = createBrowserRouter(
   createRoutesFromElements(
@@ -38,6 +41,13 @@ export const router = createBrowserRouter(
       <Route path="/single/:theId" element={<Single />} />
       <Route path="/register" element={<Register />} />
       <Route path="/login" element={<Login />} />
+      {/* Tanda 7E/7H — reset por link de email (pública, sin sesión).
+          El token viaja por QUERY STRING (?token=...) porque lleva
+          puntos y el dev-server de Vite no aplica el fallback SPA a
+          paths con "." (404). Mantenemos también la variante /:token
+          por compatibilidad con emails ya enviados (caducan en 1 h). */}
+      <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/reset-password/:token" element={<ResetPassword />} />
       <Route path="/friends" element={<Friends />} />
       <Route path="/friends/:userId" element={<FriendProfile />} />
       <Route path="/events" element={<EventsList />} />

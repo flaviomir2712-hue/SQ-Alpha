@@ -2,6 +2,9 @@ import { useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FiInstagram } from "react-icons/fi";
 import "./landingPage.css";
+// Tanda 7D — señal de sesión basada en el user persistido (el JWT vive
+// en una cookie httpOnly).
+import { isLoggedIn } from "../services/auth";
 
 // Brand + marketing assets (cropped from the official landing design).
 import sqMark from "../assets/img/logoSideQuest.png";
@@ -32,8 +35,10 @@ export const LandingPage = () => {
 	// point). Returning users who already have a session skip straight to
 	// the app instead of being shown the marketing page again.
 	// Remove this effect if you'd rather show the landing to everyone.
+	// Tanda 7D — la señal de sesión es el user persistido (el JWT vive
+	// en una cookie httpOnly que JS no puede leer).
 	useEffect(() => {
-		if (localStorage.getItem("token")) {
+		if (isLoggedIn()) {
 			navigate("/app", { replace: true });
 		}
 	}, [navigate]);

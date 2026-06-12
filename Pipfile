@@ -20,6 +20,11 @@ flask-migrate = "*"
 python-dotenv = "*"
 flask-cors = "*"
 flask-jwt-extended = "*"
+# Tanda 7F — Socket.IO en modo threading (sin eventlet/gevent, que son
+# frágiles en Python 3.13). simple-websocket habilita WebSocket real;
+# sin él, el cliente cae a long-polling automáticamente.
+flask-socketio = "*"
+simple-websocket = "*"
 
 [requires]
 python_version = "3.13"

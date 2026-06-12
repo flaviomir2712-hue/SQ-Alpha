@@ -10,6 +10,9 @@ import {
   FiCheck,
   FiX,
 } from "react-icons/fi";
+// Tanda 7D — señal de sesión basada en el user persistido (el JWT vive
+// en una cookie httpOnly).
+import { isLoggedIn } from "../services/auth";
 
 // ════════════════════════════════════════════════════════════════
 // Onboarding — Tanda 4C
@@ -211,10 +214,11 @@ export const Onboarding = () => {
 
   // Decide si abrir el tour automáticamente al cargar la app.
   // Reglas: usuario logueado + no completado + ruta apropiada.
+  // Tanda 7D — el JWT vive en una cookie httpOnly: la señal de sesión
+  // es el user persistido (isLoggedIn).
   const shouldAutoOpen = useCallback(() => {
     if (typeof window === "undefined") return false;
-    const token = localStorage.getItem("token");
-    if (!token) return false;
+    if (!isLoggedIn()) return false;
     if (localStorage.getItem(STORAGE_KEY) === "true") return false;
     const path = window.location.pathname;
     if (HIDE_ON_PATHS.includes(path)) return false;

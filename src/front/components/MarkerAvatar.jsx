@@ -1,4 +1,8 @@
-import L from "leaflet";
+// Tanda 7G2 — Migración a MapLibre: este módulo ya no depende de
+// Leaflet. createMarkerAvatar (que devolvía un L.divIcon) se sustituye
+// por createMarkerAvatarElement, que devuelve un ELEMENTO DOM real con
+// exactamente el mismo HTML/estilos inline — maplibregl.Marker acepta
+// un elemento custom directamente ({ element, anchor: "bottom" }).
 
 // Fallback shown when neither the event nor its creator has a picture.
 // Asset must live in /public/ so Vite serves it at the root URL.
@@ -8,7 +12,7 @@ export const FALLBACK_LOGO = "/sidequest-logo.png";
 export const pickMarkerImage = (event) =>
   event?.image || event?.creator_picture || FALLBACK_LOGO;
 
-// Lightweight escape so the text we inject into the divIcon HTML can never
+// Lightweight escape so the text we inject into the marker HTML can never
 // break out of attribute/tag boundaries. Avoids XSS if the title comes
 // from user input.
 const escapeHTML = (str = "") =>
@@ -25,56 +29,57 @@ const initialLetter = (event) => {
   const candidate =
     event?.title?.trim() ||
     event?.creator_username?.trim() ||
-    event?.creator_username?.trim() ||
     "?";
   return escapeHTML(candidate.charAt(0).toUpperCase());
 };
 
 /**
- * Build a Leaflet divIcon. Layout:
+ * Build the marker DOM element. Layout (idéntico a la era Leaflet):
  *
  *   [tooltip ↑ — visible only on :hover, ergonomic, fades]
  *        ⭕ avatar (event/creator/logo)
  *        ━━━━━━━━━     ← no gap, the count pill is attached to the
  *        [ 3 going ]       bottom edge of the avatar
  *
- * Everything visual is inline-styled inside the divIcon HTML so it cannot
- * be broken by external CSS cascades — that is what makes wide / tall /
- * weird-aspect images stay perfectly circular at exactly `size × size`.
+ * Everything visual is inline-styled so it cannot be broken by external
+ * CSS cascades — that is what makes wide / tall / weird-aspect images
+ * stay perfectly circular at exactly `size × size`.
  *
- * The structure has TWO layers on purpose:
- *
+ * Two layers on purpose:
  *   .sq-marker-wrapper   → overflow: visible — lets the pill + tooltip
  *                          escape the circle's bounds.
  *   inner circle <div>   → overflow: hidden + fixed width/height +
  *                          box-sizing: border-box — the IMAGE inside it
- *                          can NEVER push the marker wider, no matter
- *                          what aspect ratio it has.
+ *                          can NEVER push the marker wider.
  *
- * The :hover rule MUST come from a stylesheet (CSS files don't run inline),
- * so it lives in Mapview.jsx via a <style> block on .sq-marker-wrapper:hover.
+ * The :hover rule MUST come from a stylesheet (CSS files don't run
+ * inline), so it lives in Mapview.jsx via a <style> block.
  *
- * The icon anchor sits at the bottom-centre of the AVATAR (not of the
- * count pill) so the map coordinate stays attached to the head of the
- * pin, exactly like a classic Leaflet marker.
+ * El anclaje al fondo-centro del avatar lo da MapLibre con
+ * { anchor: "bottom" } al crear el Marker (equivalente al iconAnchor
+ * [size/2, size] de Leaflet).
  */
-export const createMarkerAvatar = (event, size = 56, goingCount = 0, tooltipText = "") => {
+export const createMarkerAvatarElement = (event, size = 56, goingCount = 0, tooltipText = "") => {
   // Accept either an event object OR a plain URL string (back-compat with
   // call sites that resolve the image themselves).
   const imageUrl = typeof event === "string" ? event : pickMarkerImage(event);
   const letter   = typeof event === "string" ? "?" : initialLetter(event);
 
   // === Inline styles ===
-  // Wrapper: positions everything; overflow VISIBLE so the pill / tooltip
-  // can stick out above and below the circle without being clipped.
+  // OJO (anclaje exacto): el wrapper NO debe llevar `position` inline.
+  // MapLibre convierte este elemento en el marcador y le aplica su
+  // clase .maplibregl-marker { position: absolute } + un transform de
+  // posicionamiento. Un `position: relative` inline PISA esa clase,
+  // deja el marcador en flujo normal y el translate parte de una base
+  // incorrecta → los avatares se desplazan de su lat/lng real (cada
+  // vez más visible al alejar el zoom). Los hijos absolutos (pill,
+  // tooltip) siguen anclando bien: position:absolute del marcador
+  // también crea contexto de posicionamiento.
   const wrapStyle =
-    `width:${size}px;height:${size}px;position:relative;` +
-    `display:flex;align-items:flex-start;justify-content:center;`;
+    `width:${size}px;height:${size}px;` +
+    `display:flex;align-items:flex-start;justify-content:center;` +
+    `cursor:pointer;`;
 
-  // Inner circle: fixed size + overflow HIDDEN. This is the magic that
-  // makes any image (wide JPG, tall portrait) render as a perfect circle
-  // without ever pushing the marker wider. box-sizing keeps the 2px white
-  // border INSIDE the size × size box.
   const circleStyle =
     `width:${size}px;height:${size}px;border-radius:50%;` +
     `overflow:hidden;border:2px solid #fff;` +
@@ -91,10 +96,6 @@ export const createMarkerAvatar = (event, size = 56, goingCount = 0, tooltipText
     ? `width:65%;height:55%;object-fit:contain;display:block;`
     : `width:100%;height:100%;object-fit:cover;display:block;`;
 
-  // Count pill: position:absolute top:100% so it sits right at the
-  // bottom edge of the avatar with NO gap. translateY(-50%) tucks half
-  // of it under the border, giving the "attached" look. Doesn't affect
-  // the iconSize box because it's absolutely positioned.
   const countStyle =
     `position:absolute;left:50%;top:100%;` +
     `transform:translate(-50%,-50%);` +
@@ -105,9 +106,6 @@ export const createMarkerAvatar = (event, size = 56, goingCount = 0, tooltipText
     `box-shadow:0 1px 4px rgba(0,0,0,0.5);` +
     `pointer-events:none;line-height:1.15;z-index:5;`;
 
-  // Tooltip: smaller font, subtle background, fades. Hidden by default
-  // (opacity:0); the :hover rule in Mapview's <style> block bumps it
-  // to opacity:1 when the wrapper is hovered.
   const tipStyle =
     `position:absolute;bottom:calc(100% + 10px);left:50%;` +
     `transform:translateX(-50%);` +
@@ -122,18 +120,14 @@ export const createMarkerAvatar = (event, size = 56, goingCount = 0, tooltipText
 
   // === HTML ===
   // The <img> has an onerror handler that swaps the image for the
-  // initial letter if the asset 404s or fails to decode. That way we
-  // always show SOMETHING, even when the logo/picture is broken.
+  // initial letter if the asset 404s or fails to decode.
   const inner = imageUrl
     ? `<img src="${escapeHTML(imageUrl)}" alt="" loading="lazy" style="${imgStyle}" onerror="this.style.display='none';this.parentElement.innerHTML='${letter}';"/>`
     : `<span>${letter}</span>`;
 
-  // data-event-id permite a Mapview encontrar este marker por id
-  // desde fuera (querySelector) sin tocar la API de react-leaflet.
-  // Lo usa la lógica de "two-tap to open" en móvil para añadir/quitar
-  // la clase `.peeked` que hace visible el tooltip tras el primer tap.
-  // event.id es un int del backend → coercionamos a string + escapamos
-  // defensivamente.
+  // data-event-id permite a Mapview encontrar este marker por id desde
+  // fuera (querySelector). Lo usa la lógica de "two-tap to open" en
+  // móvil para añadir/quitar la clase `.peeked` del tooltip.
   const eventIdAttr = typeof event === "object" && event?.id != null
     ? ` data-event-id="${escapeHTML(String(event.id))}"`
     : "";
@@ -149,17 +143,14 @@ export const createMarkerAvatar = (event, size = 56, goingCount = 0, tooltipText
         : "") +
     `</div>`;
 
-  return L.divIcon({
-    html,
-    className: "sq-marker-icon",
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size],   // anchor at bottom of AVATAR
-  });
+  const host = document.createElement("div");
+  host.innerHTML = html;
+  return host.firstElementChild;
 };
 
 /** Component variant used outside the map (lists, modal rows, etc.).
- *  Same inline-style philosophy as createMarkerAvatar — image is locked
- *  inside a fixed circle, so a wide picture is cropped, never stretched. */
+ *  Same inline-style philosophy — image is locked inside a fixed circle,
+ *  so a wide picture is cropped, never stretched. */
 export const MarkerAvatar = ({ src, alt = "avatar", size = 56 }) => (
   <div
     style={{

@@ -19,6 +19,15 @@ import { NotificationBell } from "./NotificationBell.jsx";
 // Tanda 4C — Re-disparar el tour de onboarding desde el menú.
 // Onboarding.jsx escucha este evento custom y se reabre.
 import { SHOW_ONBOARDING_EVENT } from "./Onboarding.jsx";
+// Tanda 7A — "My Profile" vive ahora en este menú (antes estaba en el
+// pill nav). El modal de perfil sigue montado dentro de ButtonNavbar
+// (siempre presente via Layout); lo abrimos con el mismo patrón de
+// evento custom que el onboarding.
+import { SHOW_PROFILE_EVENT } from "./ButtonNavbar.jsx";
+// Tanda 7D — limpieza de la sesión local (user + csrf) en el logout.
+import { clearSession } from "../services/auth.js";
+// Tanda 7F — socket en tiempo real (chat + notificaciones).
+import { getSocket, disconnectSocket } from "../services/socket.js";
 import {
     FiMenu,
     FiMail,
@@ -85,18 +94,31 @@ const API = import.meta.env.VITE_BACKEND_URL;
 // Same window the backend enforces (15 min).
 const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 
+// Tanda 7D — la autenticación viaja en la cookie httpOnly + X-CSRF-TOKEN,
+// añadidos por el parche global de fetch (services/auth.js).
 const authHeaders = () => ({
     "Content-Type": "application/json",
-    Authorization: `Bearer ${localStorage.getItem("token")}`,
 });
 
+// Tanda 7H — Retry SOLO para GET y con tope (antes: bucle infinito para
+// CUALQUIER método). Dos peligros del comportamiento viejo:
+//   - mutaciones reintentadas: si el POST de un mensaje llega al server
+//     pero la respuesta se pierde en la red, el bucle reenviaba →
+//     mensaje DUPLICADO. Ahora POST/PUT/DELETE hacen UN solo intento.
+//   - bucles zombi: con el backend caído, cada llamada quedaba
+//     reintentando para siempre (incluso tras desmontar el componente).
+// Devuelve null cuando el intento (o los reintentos) fallan por red —
+// los callers chequean `res?.ok` y conservan su último estado bueno.
+const MAX_GET_RETRIES = 3;
 const fetchWithRetry = async (url, options = {}) => {
+    const method = (options.method || "GET").toUpperCase();
+    const maxRetries = method === "GET" ? MAX_GET_RETRIES : 0;
     let delay = 400;
-    for (;;) {
+    for (let attempt = 0; ; attempt++) {
         try {
-            const res = await fetch(url, options);
-            return res;
+            return await fetch(url, options);
         } catch (_) {
+            if (attempt >= maxRetries) return null;
             await new Promise((r) => setTimeout(r, delay));
             delay = Math.min(delay * 2, 4000);
         }
@@ -105,7 +127,9 @@ const fetchWithRetry = async (url, options = {}) => {
 
 const getChatRooms = async (dispatch) => {
     const res = await fetchWithRetry(`${API}/api/chat/rooms`, { headers: authHeaders() });
-    if (!res.ok) return;
+    // Fallo de red / backend caído → conservamos el store tal cual
+    // (nada de vaciar listas por un blip transitorio).
+    if (!res?.ok) return;
     const rooms = await res.json();
     dispatch({ type: "set_chat_rooms", payload: rooms });
 };
@@ -114,7 +138,9 @@ const getRoomMessages = async (roomId) => {
     const res = await fetchWithRetry(`${API}/api/chat/rooms/${roomId}/messages`, {
         headers: authHeaders(),
     });
-    if (!res.ok) return { messages: [] };
+    // Tanda 7H — null (no {messages: []}): los callers distinguen "no
+    // pude cargar" (conservan el hilo visible) de "hilo vacío real".
+    if (!res?.ok) return null;
     return res.json();
 };
 
@@ -124,8 +150,8 @@ const sendRoomMessage = async (roomId, payload) => {
         headers: authHeaders(),
         body: JSON.stringify(payload),
     });
-    if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+    if (!res?.ok) {
+        const data = res ? await res.json().catch(() => ({})) : {};
         throw new Error(data.msg || "Failed to send message");
     }
     return res.json();
@@ -140,8 +166,8 @@ const editRoomMessage = async (roomId, msgId, newText) => {
             body: JSON.stringify({ text: newText }),
         }
     );
-    if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+    if (!res?.ok) {
+        const data = res ? await res.json().catch(() => ({})) : {};
         throw new Error(data.msg || "Failed to edit message");
     }
     return res.json();
@@ -163,7 +189,7 @@ const searchChats = async (q) => {
         `${API}/api/chat/search?q=${encodeURIComponent(q)}`,
         { headers: authHeaders() }
     );
-    if (!res.ok) return { event_rooms: [], friends: [] };
+    if (!res?.ok) return { event_rooms: [], friends: [] };
     return res.json();
 };
 
@@ -173,8 +199,8 @@ const createOrGetDm = async (userId) => {
         headers: authHeaders(),
         body: JSON.stringify({ user_id: userId }),
     });
-    if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+    if (!res?.ok) {
+        const data = res ? await res.json().catch(() => ({})) : {};
         throw new Error(data.msg || "Failed to start DM");
     }
     return res.json();
@@ -284,6 +310,18 @@ const NAVBAR_CSS = `
   margin-left: 0.4rem;
   flex-shrink: 0;
 }
+
+/* Tanda 7E — Lista de chats con scroll interno: a partir de ~5
+   conversaciones (cada carta ≈ 82px) el modal deja de crecer; el
+   resto se alcanza scrolleando DENTRO de la lista. Barra de scroll
+   oculta (Firefox + WebKit) para mantener el look limpio del modal. */
+.sq-chat-rooms-scroll {
+  max-height: min(420px, 55vh);
+  overflow-y: auto;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE/Edge legacy */
+}
+.sq-chat-rooms-scroll::-webkit-scrollbar { display: none; }  /* WebKit */
 
 /* Search */
 .sq-chat-search-input {
@@ -528,11 +566,14 @@ export const Navbar = () => {
     const location = useLocation();
     const { store, dispatch } = useGlobalReducer();
 
-    const isLogged = !!localStorage.getItem("token");
     const cachedUser = (() => {
         try { return JSON.parse(localStorage.getItem("user") || "null"); }
         catch { return null; }
     })();
+    // Tanda 7D — el JWT vive en una cookie httpOnly que JS no puede leer:
+    // la señal de sesión en UI es el user persistido. Si la cookie real
+    // ya no vale, el primer 401 limpia la sesión y redirige (api.js).
+    const isLogged = !!cachedUser;
     const currentUserId = cachedUser?.id ?? store.user?.id ?? null;
 
     const [showMessages, setShowMessages] = useState(false);
@@ -587,6 +628,9 @@ export const Navbar = () => {
                 path === "/privacy" ||
                 path === "/legal" ||
                 path === "/demo" ||
+                // Tanda 7E/7H — el link de reset llega por email SIN
+                // sesión (token en query string → path exacto).
+                path.startsWith("/reset-password") ||
                 path.startsWith("/single/");
             if (!isPublic) {
                 navigate("/login", { replace: true });
@@ -596,13 +640,24 @@ export const Navbar = () => {
     }, [isLogged, location.pathname]);
 
     // =====================================================
-    // LOAD CHAT ROOMS + POLL
+    // LOAD CHAT ROOMS + SOCKET + POLL (fallback)
     // =====================================================
+    // Tanda 7F — el evento "chat:message" del socket refresca la lista
+    // (y el badge de no leídos) al instante; el intervalo pasa de 15s a
+    // 60s y queda solo como red de seguridad si el socket se cae.
     useEffect(() => {
         if (!isLogged) return;
         getChatRooms(dispatch);
-        const t = setInterval(() => getChatRooms(dispatch), 15000);
-        return () => clearInterval(t);
+        const t = setInterval(() => getChatRooms(dispatch), 60000);
+
+        const socket = getSocket();
+        const onChatPing = () => getChatRooms(dispatch);
+        if (socket) socket.on("chat:message", onChatPing);
+
+        return () => {
+            clearInterval(t);
+            if (socket) socket.off("chat:message", onChatPing);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isLogged]);
 
@@ -611,17 +666,30 @@ export const Navbar = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showMessages]);
 
-    // poll messages while a chat is open
+    // Mensajes del hilo abierto — Tanda 7F: el socket avisa de mensajes
+    // nuevos de ESTA sala al instante; el poll baja de 4s a 20s (fallback).
     useEffect(() => {
         if (!activeRoom) return;
         let cancelled = false;
         const load = async () => {
             const data = await getRoomMessages(activeRoom.id);
-            if (!cancelled) setMessages(data.messages || []);
+            // null = fallo transitorio → conservamos lo último visible.
+            if (!cancelled && data) setMessages(data.messages || []);
         };
         load();
-        const t = setInterval(load, 4000);
-        return () => { cancelled = true; clearInterval(t); };
+        const t = setInterval(load, 20000);
+
+        const socket = getSocket();
+        const onChatPing = (p) => {
+            if (p && Number(p.room_id) === Number(activeRoom.id)) load();
+        };
+        if (socket) socket.on("chat:message", onChatPing);
+
+        return () => {
+            cancelled = true;
+            clearInterval(t);
+            if (socket) socket.off("chat:message", onChatPing);
+        };
     }, [activeRoom]);
 
     // autoscroll thread
@@ -645,9 +713,17 @@ export const Navbar = () => {
     // =====================================================
     // LOGOUT
     // =====================================================
-    const handleLogout = () => {
-        localStorage.removeItem("token");
-        localStorage.removeItem("user");
+    const handleLogout = async () => {
+        // Tanda 7D — pedimos al backend que borre la cookie httpOnly
+        // (best-effort: si el server no responde, la sesión local se
+        // limpia igual y la cookie huérfana expira sola).
+        try {
+            await fetch(`${API}/api/logout`, { method: "POST" });
+        } catch (_) { /* ignore */ }
+        // Tanda 7F — cierra el socket para que el próximo login conecte
+        // con la cookie nueva.
+        disconnectSocket();
+        clearSession();
         dispatch({ type: "logout" });
         navigate("/login", { replace: true });
     };
@@ -697,7 +773,7 @@ export const Navbar = () => {
             await sendRoomMessage(activeRoom.id, { text: replyText });
             setReplyText("");
             const data = await getRoomMessages(activeRoom.id);
-            setMessages(data.messages || []);
+            if (data) setMessages(data.messages || []);
             getChatRooms(dispatch);
         } catch (e) {
             console.error("Error sending message:", e);
@@ -715,8 +791,10 @@ export const Navbar = () => {
         // Compress before sending — keeps a phone photo around ~250 KB.
         let dataUrl;
         try {
-            const { compressImage } = await import("../utils/uploadImage");
-            dataUrl = await compressImage(file, "chat");
+            // Tanda 7V — sube a Cloudinary y guarda solo la URL en el
+            // mensaje (fallback automático a base64 si la subida falla).
+            const { compressAndUpload } = await import("../utils/uploadImage");
+            dataUrl = await compressAndUpload(file, "chat");
         } catch (compressErr) {
             console.error("Compression failed, sending raw:", compressErr);
             dataUrl = await fileToDataURL(file);
@@ -727,7 +805,7 @@ export const Navbar = () => {
                 media_type: "image",
             });
             const data = await getRoomMessages(activeRoom.id);
-            setMessages(data.messages || []);
+            if (data) setMessages(data.messages || []);
             getChatRooms(dispatch);
         } catch (err) {
             console.error("Error sending image:", err);
@@ -755,13 +833,19 @@ export const Navbar = () => {
                 audioChunksRef.current = [];
                 if (!activeRoom) return;
                 try {
+                    // Tanda 7V — audio a Cloudinary; fallback base64.
                     const dataUrl = await fileToDataURL(blob);
+                    let mediaUrl = dataUrl;
+                    try {
+                        const { uploadMedia } = await import("../utils/uploadImage");
+                        mediaUrl = await uploadMedia(dataUrl, "audio");
+                    } catch (_) { /* fallback base64 */ }
                     await sendRoomMessage(activeRoom.id, {
-                        media_url: dataUrl,
+                        media_url: mediaUrl,
                         media_type: "audio",
                     });
                     const data = await getRoomMessages(activeRoom.id);
-                    setMessages(data.messages || []);
+                    if (data) setMessages(data.messages || []);
                     getChatRooms(dispatch);
                 } catch (err) {
                     console.error("Error sending audio:", err);
@@ -810,7 +894,7 @@ export const Navbar = () => {
             await editRoomMessage(activeRoom.id, editingMsgId, trimmed);
             cancelEdit();
             const data = await getRoomMessages(activeRoom.id);
-            setMessages(data.messages || []);
+            if (data) setMessages(data.messages || []);
             getChatRooms(dispatch);
         } catch (e) {
             console.error("Error editing message:", e);
@@ -1010,8 +1094,18 @@ export const Navbar = () => {
                                         </Dropdown.Header>
                                         <Dropdown.Divider />
 
-                                        <Dropdown.Item as={Link} to="/friends">
-                                            <FiUsers className="me-2" /> Friends
+                                        {/* Tanda 7A — Swap con el pill nav: aquí va
+                                            "My Profile" (antes "Friends"); el acceso a
+                                            Friends baja al pill del ButtonNavbar. El
+                                            modal de perfil vive en ButtonNavbar, así
+                                            que lo abrimos disparando el evento custom
+                                            que ese componente escucha. */}
+                                        <Dropdown.Item
+                                            onClick={() => {
+                                                window.dispatchEvent(new Event(SHOW_PROFILE_EVENT));
+                                            }}
+                                        >
+                                            <FiUser className="me-2" /> My Profile
                                         </Dropdown.Item>
 
                                         {/* Tanda 4C — Replay del onboarding tour.
@@ -1172,16 +1266,21 @@ export const Navbar = () => {
                                             You have no active chats. Create/join an event or search for a friend to get started.
                                         </p>
                                     ) : (
-                                        <ListGroup variant="flush">
-                                            {store.chatRooms.map((room) => (
-                                                <RoomCard
-                                                    key={room.id}
-                                                    room={room}
-                                                    currentUserId={currentUserId}
-                                                    onClick={() => openRoom(room)}
-                                                />
-                                            ))}
-                                        </ListGroup>
+                                        /* Tanda 7E — scroll interno (barra oculta) a
+                                           partir de ~5 chats para que el modal no
+                                           crezca sin límite. */
+                                        <div className="sq-chat-rooms-scroll">
+                                            <ListGroup variant="flush">
+                                                {store.chatRooms.map((room) => (
+                                                    <RoomCard
+                                                        key={room.id}
+                                                        room={room}
+                                                        currentUserId={currentUserId}
+                                                        onClick={() => openRoom(room)}
+                                                    />
+                                                ))}
+                                            </ListGroup>
+                                        </div>
                                     )}
                                 </>
                             )}

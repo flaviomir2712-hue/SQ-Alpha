@@ -1,7 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "../services/api";
+// Tanda 7F — el socket avisa de mensajes nuevos al instante; el polling
+// queda solo como red de seguridad.
+import { getSocket } from "../services/socket";
 
-const POLL_INTERVAL = 3000;
+// Tanda 7F — antes 3s: el evento "chat:message" del socket refresca al
+// instante y este intervalo es solo fallback (socket caído, etc.).
+const POLL_INTERVAL = 15000;
 
 /**
  * Hook para gestionar UNA sala de chat abierta.
@@ -112,7 +117,23 @@ export const useChat = (roomId) => {
     fetchMessages().finally(() => setLoading(false));
     markRead();
     const id = setInterval(fetchMessages, POLL_INTERVAL);
-    return () => clearInterval(id);
+
+    // Tanda 7F — tiempo real: si el ping es de ESTA sala, refetch
+    // inmediato + markRead (estamos con el hilo abierto, el mensaje
+    // queda leído al instante y el badge global no parpadea).
+    const socket = getSocket();
+    const onChatPing = (p) => {
+      if (p && Number(p.room_id) === Number(roomId)) {
+        fetchMessages();
+        markRead();
+      }
+    };
+    if (socket) socket.on("chat:message", onChatPing);
+
+    return () => {
+      clearInterval(id);
+      if (socket) socket.off("chat:message", onChatPing);
+    };
   }, [roomId, fetchMessages, markRead]);
 
   return {

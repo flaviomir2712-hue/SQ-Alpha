@@ -1,5 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+// Tanda 7D — instala el parche global de fetch (cookie httpOnly +
+// X-CSRF-TOKEN) ANTES de que cualquier componente llame al backend.
+import './services/auth'
 import './index.css'  // Global styles for your application
 import { RouterProvider } from "react-router-dom";  // Import RouterProvider to use the router
 import { router } from "./routes";  // Import the router configuration
