@@ -24,39 +24,52 @@ import { api } from "../services/api";
 //     coordenadas, imagen) — el usuario edita lo que quiera e invita
 //     a sus friends. El evento externo se convierte en quest propio.
 //
-// Desktop: drawer lateral derecho. Móvil: bottom-sheet a media altura.
+// Desktop: drawer lateral izquierdo. Móvil: full-screen bajo el navbar.
+// Styles mirror EventModal (same dark-mode tokens: #161922 / #262a36 /
+// #0f111a / #6366f1 / #adb5bd / #e9ecef).
 // ════════════════════════════════════════════════════════════════
 
 const PANEL_CSS = `
 .sq-discover-panel {
   position: absolute;
-  /* Preferencia del usuario: panel anclado a la IZQUIERDA. */
   top: 12px; left: 12px; bottom: 12px;
   width: min(400px, calc(100vw - 24px));
   z-index: 1035;                      /* sobre el mapa, bajo modales (1050) */
   display: flex; flex-direction: column;
-  background: rgba(15, 17, 26, 0.92);
+  background: rgba(22, 25, 34, 0.97); /* matches EventModal #161922, frosted over the map */
   border: 1px solid #262a36;
-  border-radius: 16px;
+  border-radius: 14px;                /* matches EventModal border-radius */
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
   -webkit-backdrop-filter: blur(18px) saturate(160%);
           backdrop-filter: blur(18px) saturate(160%);
   color: #e9ecef;
   overflow: hidden;
 }
-/* Móvil — Tanda 7X2: misma huella que un modal (EventModal): ocupa la
-   pantalla bajo el navbar con márgenes pequeños. Y como hacen los
-   modales de Bootstrap con body.modal-open, mientras el panel está
-   abierto se oculta la pill nav (body.sq-discover-open lo pone el
-   propio componente) — antes el bottom-sheet la tapaba a medias. */
+/* ── Mobile — full-screen bottom-sheet anchored to the viewport ──
+   position: fixed (not absolute) so the panel is always relative to
+   the viewport, never to the map container. This prevents:
+     • the double top-offset (map already starts below the navbar)
+     • the bottom-clip caused by browser chrome / address bar shrinking
+   top = navbar height. If your navbar is a different height, adjust
+   the --sq-navbar-h custom property in your root CSS instead of here.
+   padding-bottom = safe-area-inset-bottom covers the iPhone home bar.
+   border-radius flat on the bottom → feels like a native bottom-sheet. */
 @media (max-width: 575.98px) {
   .sq-discover-panel {
-    top: 64px; left: 8px; right: 8px; bottom: 8px;
-    height: auto; width: auto;
+    position: fixed;
+    top: 56px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: auto;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 body.sq-discover-open .sq-bottom-nav { display: none; }
 
+/* ── Header ── */
 .sq-discover-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 0.8rem 1rem 0.6rem;
@@ -72,7 +85,18 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
 }
 .sq-discover-close:hover { color: #fff !important; }
 
+/* ── Filters ── */
 .sq-discover-filters { padding: 0.7rem 1rem 0.5rem; border-bottom: 1px solid #262a36; }
+
+/* Form labels — matches EventModal .form-label */
+.sq-discover-filters .form-label {
+  color: #adb5bd;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Inputs / selects — matches EventModal */
 .sq-discover-filters .form-control,
 .sq-discover-filters .form-select {
   background-color: #0f111a !important;
@@ -83,7 +107,7 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
 }
 .sq-discover-filters .form-control::placeholder { color: #6c757d; }
 
-/* Toggle Near me / City */
+/* ── Mode toggle: Near me / City ── */
 .sq-discover-mode {
   display: flex; gap: 0.35rem; margin-bottom: 0.55rem;
 }
@@ -95,22 +119,26 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
   padding: 0.3rem 0.4rem !important;
   border-radius: 8px !important;
   display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem;
+  transition: all 0.12s ease;
 }
 .sq-discover-mode button.active {
   background: rgba(99, 102, 241, 0.18) !important;
   border-color: #6366f1 !important; color: #fff !important;
 }
 
+/* ── Search button — matches EventModal primary gradient ── */
 .sq-discover-search-btn {
   background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
   border: none !important; font-weight: 600;
   font-size: 0.84rem !important;
 }
 
+/* ── Results list ── */
 .sq-discover-results { flex: 1; overflow-y: auto; padding: 0.6rem 0.8rem 0.8rem; }
 .sq-discover-results::-webkit-scrollbar { width: 0; }
 .sq-discover-results { scrollbar-width: none; }
 
+/* ── Event card — matches EventModal panel/card surfaces ── */
 .sq-discover-card {
   background: #161922; border: 1px solid #262a36; border-radius: 12px;
   margin-bottom: 0.6rem; overflow: hidden; cursor: pointer;
@@ -134,10 +162,14 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
   padding: 0.28rem 0.4rem !important;
   display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem;
 }
+
+/* ── Empty / error state ── */
 .sq-discover-empty {
   color: #6c757d; font-style: italic; font-size: 0.85rem;
   text-align: center; padding: 1.8rem 1rem;
 }
+
+/* ── Load-more pill ── */
 .sq-discover-load-more {
   width: 100%;
   background: transparent !important; color: #adb5bd !important;
@@ -148,12 +180,12 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
 `;
 
 const CATEGORIES = [
-  { value: "",       label: "All categories" },
-  { value: "music",  label: "Music" },
+  { value: "", label: "All categories" },
+  { value: "music", label: "Music" },
   { value: "sports", label: "Sports" },
-  { value: "arts",   label: "Arts & Theatre" },
-  { value: "film",   label: "Film" },
-  { value: "misc",   label: "Other" },
+  { value: "arts", label: "Arts & Theatre" },
+  { value: "film", label: "Film" },
+  { value: "misc", label: "Other" },
 ];
 
 const fmtPrice = (ev) => {
@@ -226,6 +258,10 @@ export const DiscoverPanel = ({
   const [dateTo, setDateTo] = useState("");
   const [radius, setRadius] = useState(40);
   const [maxPrice, setMaxPrice] = useState("");
+  // Tanda 7X5 — los eventos sin fecha (sobre todo de Google) llegan
+  // marcados `incomplete` por el backend; ocultos por defecto, visibles
+  // con este toggle ("missed details").
+  const [showIncomplete, setShowIncomplete] = useState(false);
 
   const [results, setResults] = useState([]);
   const [total, setTotal] = useState(0);
@@ -340,11 +376,16 @@ export const DiscoverPanel = ({
 
   if (!show) return null;
 
-  // Filtro de precio client-side (los proveedores no filtran por precio
-  // en servidor): oculta lo que SUPERA el máximo; lo sin precio se queda.
-  const visible = maxPrice
-    ? results.filter((ev) => ev.price_min == null || ev.price_min <= Number(maxPrice))
-    : results;
+  // Filtros client-side (los proveedores no filtran por precio ni por
+  // completitud en servidor):
+  //   - precio: oculta lo que SUPERA el máximo; lo sin precio se queda.
+  //   - incompletos (sin fecha): ocultos salvo que el toggle esté ON.
+  const incompleteCount = results.filter((ev) => ev.incomplete).length;
+  const visible = results.filter((ev) => {
+    if (!showIncomplete && ev.incomplete) return false;
+    if (maxPrice && !(ev.price_min == null || ev.price_min <= Number(maxPrice))) return false;
+    return true;
+  });
 
   return (
     <div className="sq-discover-panel" role="dialog" aria-label="Discover events">
@@ -440,6 +481,19 @@ export const DiscoverPanel = ({
             ? <Spinner size="sm" animation="border" />
             : <><FiSearch className="me-1" /> Search</>}
         </Button>
+
+        {/* Tanda 7X5 — "missed details": mostrar eventos sin fecha
+            (sobre todo de Google). Solo aparece si los hay. */}
+        {incompleteCount > 0 && (
+          <Form.Check
+            type="switch"
+            id="sq-discover-incomplete"
+            className="mt-2 small text-secondary"
+            label={`Show ${incompleteCount} event${incompleteCount > 1 ? "s" : ""} missing a date`}
+            checked={showIncomplete}
+            onChange={(e) => setShowIncomplete(e.target.checked)}
+          />
+        )}
       </div>
 
       <div className="sq-discover-results">
@@ -460,7 +514,7 @@ export const DiscoverPanel = ({
           >
             {ev.image && (
               <img className="cover" src={ev.image} alt="" loading="lazy"
-                   onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                onError={(e) => { e.currentTarget.style.display = "none"; }} />
             )}
             <div className="sq-discover-card-body">
               <div className="sq-discover-card-title">{ev.title}</div>
@@ -497,16 +551,17 @@ export const DiscoverPanel = ({
                 <Button
                   variant="primary" size="sm"
                   onClick={(e) => { e.stopPropagation(); onCreateFrom && onCreateFrom(ev); }}
-                  title="Create a SideQuest event here and invite your friends"
+                  title="See full details and create a SideQuest event here to invite your friends"
                 >
-                  <FiPlus /> SideQuest
+                  {/* "(infos)" avisa de que al abrir se ven más detalles
+                      (la descripción completa, no cabe en la card). */}
+                  <FiPlus /> SideQuest <span className="opacity-75">(infos)</span>
                 </Button>
               </div>
             </div>
           </div>
         ))}
 
-        {/* Paginación del proveedor — "cargar más" mientras queden */}
         {!loading && visible.length > 0 && results.length < total && (
           <Button className="sq-discover-load-more" onClick={() => search(page + 1)}>
             Load more ({results.length}/{total})

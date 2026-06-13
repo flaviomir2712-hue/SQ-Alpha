@@ -461,52 +461,125 @@ HASDATA_CATEGORY_Q = {
 }
 
 
-def _parse_google_date(date_obj):
-    """('YYYY-MM-DD'|None, 'HH:MM'|None) desde el bloque de fecha textual
-    de Google Events. Asume año actual; si la fecha caería >30 días en el
-    pasado, rueda al año siguiente (los eventos miran al futuro)."""
+def _roll_future(year, month, day):
+    """ISO de (año?,mes,día). Sin año: año actual, y si cae >30 días en
+    el pasado, rueda al siguiente (los eventos miran al futuro). None si
+    la fecha no es válida (p. ej. 31 de febrero de un texto basura)."""
+    today = dt.date.today()
+    try:
+        if year:
+            return dt.date(year, month, day).isoformat()
+        cand = dt.date(today.year, month, day)
+        if cand < today - dt.timedelta(days=30):
+            cand = dt.date(today.year + 1, month, day)
+        return cand.isoformat()
+    except ValueError:
+        return None
+
+
+def _extract_datetime(text):
+    """('YYYY-MM-DD'|None, 'HH:MM'|None) escaneando texto libre. Cubre
+    los formatos que Google mete tanto en el bloque de fecha como en el
+    cuerpo del anuncio: ISO, mes-nombre+día, día+mes-nombre (orden
+    europeo) y numérico D/M/Y. Best-effort — el campo queda editable."""
     import re
+    if not text:
+        return None, None
+    t = str(text)
+    date_iso = None
+
+    # 1. ISO  2026-07-04
+    m = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", t)
+    if m:
+        try:
+            date_iso = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError:
+            pass
+
+    # 2. Mes-nombre + día (+ año opcional): "Jul 4", "July 4, 2026"
+    if not date_iso:
+        m = re.search(
+            r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+(\d{1,2})"
+            r"(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?", t, re.I)
+        if m:
+            date_iso = _roll_future(
+                int(m.group(3)) if m.group(3) else None,
+                _MONTHS[m.group(1).lower()[:3]], int(m.group(2)))
+
+    # 3. Día + mes-nombre (orden europeo): "4 Jul", "4 July 2026"
+    if not date_iso:
+        m = re.search(
+            r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
+            r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?"
+            r"(?:,?\s*(20\d{2}))?", t, re.I)
+        if m:
+            date_iso = _roll_future(
+                int(m.group(3)) if m.group(3) else None,
+                _MONTHS[m.group(2).lower()[:3]], int(m.group(1)))
+
+    # 4. Numérico europeo D/M/Y o D.M.Y
+    if not date_iso:
+        m = re.search(r"\b(\d{1,2})[/.](\d{1,2})[/.](20\d{2})\b", t)
+        if m:
+            try:
+                date_iso = dt.date(
+                    int(m.group(3)), int(m.group(2)), int(m.group(1))).isoformat()
+            except ValueError:
+                pass
+
+    return date_iso, _extract_time(t)
+
+
+def _hhmm(hour, minute, ap):
+    """Convierte (hora, min, 'a'|'p'|None) a 'HH:MM' o None si inválida."""
+    if ap == "p" and hour != 12:
+        hour += 12
+    elif ap == "a" and hour == 12:
+        hour = 0
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return "{:02d}:{:02d}".format(hour, minute)
+    return None
+
+
+def _extract_time(t):
+    """'HH:MM'|None desde texto. La clave es la hora de INICIO: Google da
+    rangos como "5:00 – 11:59 PM" u "8 – 11 PM" donde el am/pm aparece
+    SOLO al final → hay que aplicárselo a la PRIMERA hora (si no,
+    cogíamos las 23:59 en vez de las 17:00)."""
+    import re
+    # 1. Rango "H[:MM] – H[:MM] am/pm" → primera hora, meridiem del final.
+    rng = re.search(
+        r"\b(\d{1,2})(?::(\d{2}))?\s*[–\-—]\s*\d{1,2}(?::\d{2})?\s*([ap])\.?m\.?",
+        t, re.I)
+    if rng:
+        out = _hhmm(int(rng.group(1)), int(rng.group(2) or 0),
+                    rng.group(3).lower())
+        if out:
+            return out
+    # 2. Hora simple con meridiem: "8 PM", "8:30 pm".
+    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", t, re.I)
+    if m:
+        out = _hhmm(int(m.group(1)), int(m.group(2) or 0), m.group(3).lower())
+        if out:
+            return out
+    # 3. 24h: "20:30".
+    m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", t)
+    if m:
+        return "{:02d}:{:02d}".format(int(m.group(1)), int(m.group(2)))
+    return None
+
+
+def _parse_google_date(date_obj):
+    """Extrae fecha/hora del bloque de fecha de Google Events."""
     if not date_obj:
         return None, None
     if isinstance(date_obj, dict):
-        start = (date_obj.get("startDate") or date_obj.get("start_date") or "")
-        when = (date_obj.get("when") or "")
+        text = "{} {}".format(
+            date_obj.get("startDate") or date_obj.get("start_date") or "",
+            date_obj.get("when") or "")
     else:
-        start = when = str(date_obj)
-    text = "{} {}".format(start, when)
-
-    date_iso = None
-    m = re.search(
-        r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{1,2})",
-        text, re.I)
-    if m:
-        month = _MONTHS[m.group(1).lower()[:3]]
-        day = int(m.group(2))
-        today = dt.date.today()
-        try:
-            cand = dt.date(today.year, month, day)
-            if cand < today - dt.timedelta(days=30):
-                cand = dt.date(today.year + 1, month, day)
-            date_iso = cand.isoformat()
-        except ValueError:
-            date_iso = None
-
-    time_hhmm = None
-    tm = re.search(r"(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", when, re.I)
-    if tm:
-        hour = int(tm.group(1))
-        minute = int(tm.group(2) or 0)
-        if tm.group(3).lower() == "p" and hour != 12:
-            hour += 12
-        if tm.group(3).lower() == "a" and hour == 12:
-            hour = 0
-        time_hhmm = "{:02d}:{:02d}".format(hour, minute)
-    else:
-        tm24 = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", when)
-        if tm24:
-            time_hhmm = "{:02d}:{:02d}".format(
-                int(tm24.group(1)), int(tm24.group(2)))
-    return date_iso, time_hhmm
+        text = str(date_obj)
+    return _extract_datetime(text)
 
 
 def _hd_get(d, *keys):
@@ -532,6 +605,18 @@ def _hd_normalize(ev):
     location = _join_address(loc_parts)
 
     date_iso, time_hhmm = _parse_google_date(_hd_get(ev, "date"))
+
+    # Fallback: si Google no dio fecha en su bloque, la buscamos en el
+    # texto del anuncio (título + descripción). Best-effort y editable.
+    if not date_iso:
+        d2, t2 = _extract_datetime(
+            "{} {}".format(ev.get("title") or "", _hd_get(ev, "description") or ""))
+        date_iso = d2
+        time_hhmm = time_hhmm or t2
+
+    # Hora por defecto cuando hay día pero no hora: 09:00 ("este día").
+    if date_iso and not time_hhmm:
+        time_hhmm = "09:00"
 
     return {
         "id":          "hd_{}".format(abs(hash(
@@ -689,7 +774,37 @@ def discover_events():
         deduped.append(e)
     events = deduped
 
-    events.sort(key=lambda e: (e.get("date") or "9999", e.get("time") or "99:99"))
+    # Tanda 7X6 — Filtro de rango de fechas en el SERVIDOR para TODOS los
+    # proveedores. Imprescindible para Google/HasData (su API no acepta
+    # rango arbitrario, solo hoy/semana/mes) y de red de seguridad para
+    # el resto. Las fechas son ISO ("YYYY-MM-DD") → comparar como string
+    # es comparar cronológicamente. Los eventos SIN fecha (incompletos)
+    # NO se filtran aquí: siguen disponibles vía el toggle del frontend.
+    start = filters.get("start")
+    end = filters.get("end")
+    if start or end:
+        def _in_range(e):
+            d = e.get("date")
+            if not d:
+                return True  # incompleto → no se puede comparar, se conserva
+            if start and d < start:
+                return False
+            if end and d > end:
+                return False
+            return True
+        events = [e for e in events if _in_range(e)]
+
+    # Tanda 7X5 — marca "detalles incompletos" (sin fecha tras todos los
+    # intentos de extracción). El frontend los oculta por defecto y los
+    # muestra solo con el toggle "Show events missing a date". Genérico:
+    # cubre a cualquier proveedor, no solo Google.
+    for e in events:
+        e["incomplete"] = not e.get("date")
+
+    # Orden: primero los que tienen fecha (por fecha/hora), los
+    # incompletos al final.
+    events.sort(key=lambda e: (
+        e.get("date") or "9999-12-31", e.get("time") or "99:99"))
 
     payload = {
         "events": events,

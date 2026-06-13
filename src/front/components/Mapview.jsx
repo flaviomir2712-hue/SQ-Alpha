@@ -68,11 +68,18 @@ const MARKER_HOVER_CSS = `
 }
 
 /* Tanda 7X — botón flotante que despliega el panel Discover. Mismo
-   lenguaje glassmorphism que la pill nav. */
+   lenguaje glassmorphism que la pill nav.
+   Tanda 7X7 — FIX UX (móvil): antes era position:absolute (anclado al
+   contenedor del mapa); al abrir un modal de Bootstrap ese anclaje se
+   volvía frágil y el botón saltaba arriba, sobre el navbar. Ahora es
+   position:fixed anclado al VIEWPORT (siempre justo debajo del navbar,
+   top 68px = 56 navbar + 12), z-index por DEBAJO del navbar (1030) y
+   del backdrop de modales (1040), y se oculta mientras hay un modal
+   abierto — igual que la pill de abajo. */
 .sq-discover-fab {
-  position: absolute;
-  top: 12px; left: 12px;
-  z-index: 1030;
+  position: fixed;
+  top: 68px; left: 12px;
+  z-index: 1020;
   display: inline-flex; align-items: center; gap: 0.4rem;
   padding: 0.45rem 0.85rem;
   background: rgba(15, 17, 26, 0.82);
@@ -87,6 +94,25 @@ const MARKER_HOVER_CSS = `
 }
 .sq-discover-fab:hover { border-color: #6366f1; color: #fff; }
 .sq-discover-fab:active { transform: scale(0.96); }
+/* Fuera mientras hay un modal abierto (mismo criterio que .sq-bottom-nav). */
+body.modal-open .sq-discover-fab { display: none; }
+
+/* Tanda 7X7 — Controles de MapLibre (zoom +/− y brújula "volver al
+   norte"): mismo tratamiento que el FAB. Antes estaban anclados a la
+   esquina del mapa (position:absolute) y quedaban TAPADOS por el navbar
+   / saltaban en móvil. Ahora position:fixed al VIEWPORT, top 68px (=56
+   navbar + 12) para que queden justo debajo del navbar como el FAB,
+   right 12px, z-index por debajo del navbar (1030) y del backdrop de
+   modales (1040). El selector va scopeado bajo .sq-map-wrapper para
+   ganar especificidad sobre la regla por defecto de MapLibre. */
+.sq-map-wrapper .maplibregl-ctrl-top-right {
+  position: fixed;
+  top: 68px;
+  right: 12px;
+  z-index: 1020;
+}
+/* Fuera mientras hay un modal abierto (igual que el FAB y la pill). */
+body.modal-open .maplibregl-ctrl-top-right { display: none; }
 `;
 
 // Detecta si el dispositivo NO tiene capacidad de hover (móvil/tablet).
