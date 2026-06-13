@@ -88,6 +88,16 @@ def _init_socketio(state):
     socketio.init_app(state.app, cors_allowed_origins=allowed_origins())
 
 
+# Tanda 7X — Discover (eventos del mundo, ver api/discover.py): blueprint
+# propio registrado con el mismo truco record_once — app.py intacto.
+from api.discover import discover_bp  # noqa: E402  (tras crear `api`)
+
+
+@api.record_once
+def _register_discover(state):
+    state.app.register_blueprint(discover_bp, url_prefix="/api/discover")
+
+
 # ── Tanda 7E — tokens de email (firmados + caducidad) ──────
 # Firmados con la misma secret del JWT; el "salt" separa los usos para
 # que un token de verificación jamás sirva para resetear contraseña.

@@ -17,9 +17,13 @@ import { Container, Spinner, Alert } from "react-bootstrap";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
+import { FiCompass } from "react-icons/fi";
+
 import useGlobalReducer from "../hooks/useGlobalReducer";
 import { createMarkerAvatarElement } from "./MarkerAvatar";
 import { EventModal } from "./EventModal";
+// Tanda 7X — panel Discover (eventos del mundo) desplegable sobre el mapa.
+import { DiscoverPanel } from "./DiscoverPanel";
 // Tanda 7F2 — el mapa se refresca en tiempo real: ping "event:changed"
 // del socket (cambios de cualquier usuario afectado) + evento DOM local
 // (cambios hechos en este navegador desde modales fuera del mapa).
@@ -62,6 +66,27 @@ const MARKER_HOVER_CSS = `
     transform: translateX(-50%) translateY(-2px) !important;
   }
 }
+
+/* Tanda 7X — botón flotante que despliega el panel Discover. Mismo
+   lenguaje glassmorphism que la pill nav. */
+.sq-discover-fab {
+  position: absolute;
+  top: 12px; left: 12px;
+  z-index: 1030;
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  background: rgba(15, 17, 26, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: #e9ecef; font-weight: 600; font-size: 0.85rem;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+          backdrop-filter: blur(16px) saturate(160%);
+  transition: border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+.sq-discover-fab:hover { border-color: #6366f1; color: #fff; }
+.sq-discover-fab:active { transform: scale(0.96); }
 `;
 
 // Detecta si el dispositivo NO tiene capacidad de hover (móvil/tablet).
@@ -189,6 +214,12 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const [activeEventId, setActiveEventId] = useState(null);
   const [prefillCoords, setPrefillCoords] = useState(null);
+  // Tanda 7X — datos del evento externo elegido en Discover con los que
+  // pre-rellenar el EventModal (título, resumen, fecha, hora, dirección…).
+  const [prefillEvent, setPrefillEvent] = useState(null);
+  const [showDiscover, setShowDiscover] = useState(false);
+  // Marcador ámbar temporal del resultado de Discover en preview.
+  const previewMarkerRef = useRef(null);
 
   // ── UX two-tap (touch devices) ─────────────────────────────
   const [peekedMarkerId, setPeekedMarkerId] = useState(null);
@@ -645,6 +676,79 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setModalOpen(false);
     setActiveEventId(null);
     setPrefillCoords(null);
+    setPrefillEvent(null);
+  };
+
+  // ── Tanda 7X — Discover ────────────────────────────────────
+  const clearPreviewMarker = () => {
+    if (previewMarkerRef.current) {
+      previewMarkerRef.current.remove();
+      previewMarkerRef.current = null;
+    }
+  };
+
+  // Click en una card del panel → flyTo + marcador ámbar temporal.
+  const handleDiscoverPreview = (ev) => {
+    if (ev?.latitude == null || ev?.longitude == null || !mapRef.current) return;
+    setFollowUser(false);
+    isProgrammaticMoveRef.current = true;
+    mapRef.current.flyTo({
+      center: [ev.longitude, ev.latitude],
+      zoom: 14,
+      duration: 800,
+    });
+    setTimeout(() => { isProgrammaticMoveRef.current = false; }, 900);
+
+    clearPreviewMarker();
+    const host = document.createElement("div");
+    host.innerHTML =
+      `<div style="width:18px;height:18px;border-radius:50%;` +
+      `background:#facc15;border:3px solid #0b0d12;` +
+      `box-shadow:0 0 14px rgba(250,204,21,0.8);"></div>`;
+    previewMarkerRef.current = new maplibregl.Marker({
+      element: host.firstElementChild,
+      anchor: "center",
+    }).setLngLat([ev.longitude, ev.latitude]).addTo(mapRef.current);
+  };
+
+  const handleDiscoverClose = () => {
+    setShowDiscover(false);
+    clearPreviewMarker();
+  };
+
+  // "+ SideQuest" en una card → el evento externo se convierte en el
+  // borrador de un quest propio: mismo EventModal de siempre, todo
+  // editable, con invitación a friends incluida.
+  const handleCreateFromDiscover = (ev) => {
+    // Tanda 7X2 — el venue va a los DETALLES, no al campo dirección:
+    // "Estadio X — Calle Y, Madrid" rompía el forward-geocode del
+    // EventModal (Nominatim no entiende el "—" ni el nombre del recinto
+    // y mandaba el pin al mar). El campo location lleva SOLO la
+    // dirección geocodificable; si el proveedor no la dio, el nombre
+    // del venue como mejor aproximación.
+    const details = [
+      ev.venue_name ? `Venue: ${ev.venue_name}` : null,
+      ev.description,
+      ev.url ? `Tickets / info: ${ev.url}` : null,
+    ].filter(Boolean).join("\n\n");
+
+    setShowDiscover(false);
+    clearPreviewMarker();
+    setActiveEventId(null);
+    setPrefillCoords(
+      ev.latitude != null && ev.longitude != null
+        ? { latitude: ev.latitude, longitude: ev.longitude }
+        : null
+    );
+    setPrefillEvent({
+      title:    ev.title || "",
+      details,
+      date:     ev.date || "",
+      time:     ev.time || "",
+      location: ev.location || ev.venue_name || "",
+      image:    ev.image || "",
+    });
+    setModalOpen(true);
   };
 
   const handleSaved = (eventOrNull) => {
@@ -678,6 +782,26 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           className="sq-maplibre-container"
           style={{ height: "100%", width: "100%" }}
         />
+
+        {/* Tanda 7X — Discover: botón flotante + panel sobre el mapa */}
+        {!showDiscover && (
+          <button
+            type="button"
+            className="sq-discover-fab"
+            onClick={() => setShowDiscover(true)}
+            title="Discover real-world events"
+            aria-label="Discover events"
+          >
+            <FiCompass size={16} /> Discover
+          </button>
+        )}
+        <DiscoverPanel
+          show={showDiscover}
+          onClose={handleDiscoverClose}
+          userCenter={userCenter}
+          onPreview={handleDiscoverPreview}
+          onCreateFrom={handleCreateFromDiscover}
+        />
       </div>
 
       <EventModal
@@ -685,6 +809,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
         onHide={handleClose}
         eventId={activeEventId}
         prefillCoords={prefillCoords}
+        prefillEvent={prefillEvent}
         currentUser={currentUser}
         onSaved={handleSaved}
         onDeleted={() => fetchEvents()}

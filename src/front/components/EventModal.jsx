@@ -537,6 +537,10 @@ export const EventModal = ({
   onHide,
   eventId = null,
   prefillCoords = null,
+  // Tanda 7X — borrador procedente de Discover (evento del mundo real):
+  // { title, details, date, time, location, image }. Solo aplica en modo
+  // creación; todo queda 100% editable por el usuario.
+  prefillEvent = null,
   currentUser = null,
   onSaved = () => {},
   onDeleted = () => {},
@@ -651,20 +655,28 @@ export const EventModal = ({
     if (isEditMode) {
       hydrate();
     } else {
+      // Tanda 7X — si venimos de Discover, el borrador llega pre-rellenado
+      // (título, resumen, fecha, hora, dirección, imagen). Sin prefill,
+      // comportamiento de siempre (formulario vacío + coords del click).
       setForm({
-        title:     "",
-        date:      "",
-        time:      "",
-        location:  "",
-        details:   "",
-        image:     "",
+        title:     prefillEvent?.title    || "",
+        date:      prefillEvent?.date     || "",
+        time:      prefillEvent?.time     || "",
+        location:  prefillEvent?.location || "",
+        details:   prefillEvent?.details  || "",
+        image:     prefillEvent?.image    || "",
         is_public: false,
         latitude:  prefillCoords?.latitude ?? null,
         longitude: prefillCoords?.longitude ?? null,
       });
       setEventData(null);
 
-      if (prefillCoords?.latitude && prefillCoords?.longitude) {
+      // El reverse-geocode solo cuando NO traemos ya una dirección del
+      // proveedor — la suya suele ser más precisa que la inversa.
+      if (
+        !prefillEvent?.location &&
+        prefillCoords?.latitude && prefillCoords?.longitude
+      ) {
         reverseGeocode(prefillCoords.latitude, prefillCoords.longitude).then((addr) => {
           if (addr) setForm((f) => ({ ...f, location: addr }));
         });

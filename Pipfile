@@ -25,6 +25,8 @@ flask-jwt-extended = "*"
 # sin él, el cliente cae a long-polling automáticamente.
 flask-socketio = "*"
 simple-websocket = "*"
+# Tanda 7X — proxy de proveedores de eventos externos (api/discover.py).
+requests = "*"
 
 [requires]
 python_version = "3.13"
