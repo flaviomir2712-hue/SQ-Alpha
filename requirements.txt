@@ -28,3 +28,6 @@ typing-extensions==4.15.0; python_version >= '3.9'
 urllib3==2.5.0; python_version >= '3.9'
 werkzeug==3.1.8; python_version >= '3.9'
 wtforms==3.1.2; python_version >= '3.8'
+flask-socketio==5.5.1
+eventlet==0.40.0
+requests==2.32.3

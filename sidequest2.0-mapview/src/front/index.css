@@ -1,0 +1,156 @@
+/* ╔════════════════════════════════════════════════════════════════╗
+   ║  SideQuest — index.css                                          ║
+   ║  Global stylesheet (loaded once in main.jsx).                   ║
+   ║                                                                 ║
+   ║  Contiene SOLO:                                                 ║
+   ║    1. Reset de <body> (margin/padding/bg/font).                 ║
+   ║    2. .home-page  →  usada por src/front/pages/Home.jsx         ║
+   ║                       como wrapper fullscreen del Mapview.      ║
+   ║    3. Reglas GLOBALES que afectan a toda la app (móvil).        ║
+   ║                                                                 ║
+   ║  Las reglas específicas de cada página/componente viven en      ║
+   ║  su propio fichero (.css por página o bloque <style> en JSX).   ║
+   ╚════════════════════════════════════════════════════════════════╝
+
+   ─── HISTORIAL DE LIMPIEZA (task #8) ─────────────────────────────
+   Se borraron las siguientes reglas porque NINGÚN JSX las usa ya
+   (la app pasó de un sistema "plano" a uno con clases .sq-*):
+
+     .top-navbar          (reemplazada por .sq-navbar)
+     .logo                (reemplazada por <img> de marca)
+     .navbar-actions      (no se usa)
+     .menu-icon           (no se usa)
+     .mail-button         (no se usa)
+     .mail-button span    (no se usa)
+     .map-wrapper         (no se usa)
+     .map-container       (.leaflet-container se estila en map.css)
+     .avatar-marker       (DEFINIDA EN map.css/MarkerAvatar.jsx)
+     .avatar-marker img   (idem)
+     .event-card          (DEFINIDA EN EventsList.jsx — CONFLICTABA)
+     .event-card p
+     .event-buttons
+     .event-buttons button
+     .close-card-button
+     .bottom-navbar       (reemplazada por .sq-bottom-nav)
+     .bottom-item         (no se usa)
+     .bottom-item svg / span
+     .profile-button      (no se usa)
+     .profile-image-section / .profile-image-preview (no se usan)
+     .joined-button       (no se usa)
+     .chat-messages       (no se usa)
+     .chat-message / .chat-message p (no se usan; el chat usa .sq-msg-*)
+
+   Si reaparece alguno de estos selectores en un componente nuevo,
+   AÑADIRLO al fichero del componente, no aquí.
+   ────────────────────────────────────────────────────────────── */
+
+/* 1. Reset base
+   IMPORTANTE: <html> también recibe el bg dark.
+   En iOS Safari, el "rubber band" del scroll (cuando arrastras
+   hacia abajo en el top de la página) expone el background del
+   <html>, no del <body>. Sin esto se ve una franja BLANCA del
+   sistema. También cubre el caso de margin-collapse de páginas
+   con padding-top en el wrapper. */
+html {
+	background: #0b0d12;
+}
+
+body {
+	margin: 0;
+	padding: 0;
+	background: #0b0d12;
+	color: #e9ecef;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+		"Helvetica Neue", Arial, sans-serif;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+/* 2. Wrapper de Home.jsx — mapa a pantalla completa */
+.home-page {
+	width: 100%;
+	height: 100vh;     /* fallback */
+	height: 100dvh;    /* iOS Safari estable */
+	overflow: hidden;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   3. REGLAS GLOBALES MÓVIL
+   ────────────────────────────────────────────────────────────── */
+
+/* ── FIX bug #6 — Anti-zoom iOS al focar inputs ────────────────
+   iOS Safari (iPhone) hace zoom automático sobre el input cuando
+   su font-size computado es < 16px. Esto rompe layouts, esconde
+   la pill bottom-nav y obliga al usuario a pinch-out después.
+
+   Bootstrap 5 usa --bs-body-font-size: 1rem (=16px) por defecto,
+   pero muchos de nuestros bloques <style> bajan a 0.85-0.95rem
+   con !important. Aquí forzamos 16px (1rem) GLOBAL para TODOS
+   los campos editables solo en breakpoint xs (<576px).
+
+   Lo aplicamos a los <input>, <textarea>, <select>, .form-control
+   y .form-select de Bootstrap. !important porque la mayoría de
+   nuestros estilos también usan !important.
+
+   Si un campo NECESITA verse más pequeño en móvil, sobreescribe
+   con `font-size: 16px` mínimo (no menos) y prueba en iPhone real
+   antes de mergear.
+   ────────────────────────────────────────────────────────────── */
+@media (max-width: 575.98px) {
+	input[type="text"],
+	input[type="email"],
+	input[type="password"],
+	input[type="tel"],
+	input[type="number"],
+	input[type="date"],
+	input[type="time"],
+	input[type="datetime-local"],
+	input[type="search"],
+	input[type="url"],
+	textarea,
+	select,
+	.form-control,
+	.form-select {
+		font-size: 16px !important;
+	}
+}
+
+/* ── FIX global #5 — 100vh → 100dvh en iOS Safari ────────────
+   Problema: 100vh en iOS Safari NO respeta la barra de URL
+   dinámica. Cuando la barra aparece/desaparece, los layouts
+   "saltan" o dejan zonas inalcanzables.
+
+   Solución: @supports detecta si el navegador soporta dvh
+   (Chrome 108+, Safari 15.4+, Firefox 101+ — todo lo moderno).
+   Si soporta, sobrescribimos TODAS las clases-página de la app
+   con min-height:100dvh de un golpe, sin tocar cada CSS.
+
+   Si el navegador NO soporta dvh (Safari iOS < 15.4 etc),
+   cae al 100vh declarado en cada fichero como fallback.
+   ────────────────────────────────────────────────────────────
+   Si añades una nueva página, añade su clase wrapper a esta
+   lista para que también herede el fix.
+   ──────────────────────────────────────────────────────────── */
+@supports (height: 100dvh) {
+	html,
+	body,
+	.home-page,
+	.sq-msg-page,
+	.friends-page,
+	.my-profile-page,
+	.events-list-page,
+	.profile-container,
+	.sq-auth-wrap,
+	.lp-root,
+	.map-page {
+		min-height: 100dvh;
+	}
+	/* Algunas páginas usan height:100vh (no min-height): home,
+	   landing, map. Forzamos también la altura completa dinámica.
+	   (NO incluimos aquí .sq-msg-layout porque messages.css usa
+	   un calc() específico que cuenta espacio para navbar+pill;
+	   sobreescribirlo con 100dvh aquí rompe el composer.) */
+	.home-page {
+		height: 100dvh;
+	}
+}

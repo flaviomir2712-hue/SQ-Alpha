@@ -1,0 +1,5 @@
+git clone https://github.com/4GeeksAcademy/sidequest2.0
+git remote remove origin
+git remote add origin https://github.com/Marvin-Martin/sidequest2.0.beta
+
+git push --force origin mapview
