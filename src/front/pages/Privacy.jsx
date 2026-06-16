@@ -118,7 +118,7 @@ export const Privacy = () => {
           </p>
           <ul>
             <li><strong>Name</strong>: SideQuest</li>
-            <li><strong>Address</strong>: 7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg</li>
+            <li><strong>Address</strong>:  Luxembourg, Luxembourg</li>
             <li><strong>Email</strong>: <a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a></li>
             <li><strong>Representative</strong>: Marveen Riskwait</li>
           </ul>
@@ -600,7 +600,7 @@ export const Privacy = () => {
           </p>
           <ul>
             <li><strong>Email</strong>: <a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a></li>
-            <li><strong>Post</strong>: SideQuest, 7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg</li>
+            <li><strong>Post</strong>: SideQuest,  Luxembourg, Luxembourg</li>
             <li><strong>Response time</strong>: within 30 days</li>
           </ul>
           <p>

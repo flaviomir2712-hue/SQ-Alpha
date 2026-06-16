@@ -99,7 +99,7 @@ export const Terms = () => {
           <p>
             These Terms of Service ("Terms") constitute a legally binding agreement between
             you and SideQuest, an unincorporated association ("association de fait") based at
-            7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg ("SideQuest", "we", "us", "our"),
+             Luxembourg, Luxembourg ("SideQuest", "we", "us", "our"),
             governing your access to and use of the SideQuest application, website, APIs and
             all related services (collectively, the "Service").
           </p>
@@ -324,7 +324,7 @@ export const Terms = () => {
           <p>
             Our single point of contact for DSA purposes and for EU authorities is:{" "}
             <a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a> —
-            Marveen Riskwait, 7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg.
+            Marveen Riskwait,  Luxembourg, Luxembourg.
           </p>
 
           {/* 12 */}
@@ -532,7 +532,7 @@ export const Terms = () => {
             We will send notices to you at the email address associated with your account.
             You may send legal notices to us at{" "}
             <a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a>{" "}
-            or by post to 7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg. Notices
+            or by post to  Luxembourg, Luxembourg. Notices
             are deemed received: (a) immediately when sent by email if no delivery failure
             is received; or (b) 5 business days after posting by registered mail.
           </p>
@@ -570,7 +570,7 @@ export const Terms = () => {
           </p>
           <ul>
             <li><strong>Email</strong>: <a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a></li>
-            <li><strong>Post</strong>: SideQuest, 7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg</li>
+            <li><strong>Post</strong>: SideQuest,  Luxembourg, Luxembourg</li>
             <li><strong>DSA contact</strong>: same as above — Marveen Riskwait</li>
           </ul>
 

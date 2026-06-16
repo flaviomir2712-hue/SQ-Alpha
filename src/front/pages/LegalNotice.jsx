@@ -64,7 +64,7 @@ export const LegalNotice = () => {
             </dd>
 
             <dt>Registered address</dt>
-            <dd>7 rue Nicolas van Werveke, 2725 Luxembourg, Grand Duchy of Luxembourg</dd>
+            <dd> Luxembourg, Grand Duchy of Luxembourg</dd>
 
             <dt>Contact email</dt>
             <dd><a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a></dd>
@@ -198,7 +198,7 @@ export const LegalNotice = () => {
           <ul>
             <li><strong>Name</strong>: Marveen Riskwait</li>
             <li><strong>Email</strong>: <a href="mailto:radiostation87.7.7@gmail.com">radiostation87.7.7@gmail.com</a></li>
-            <li><strong>Address</strong>: 7 rue Nicolas van Werveke, 2725 Luxembourg, Luxembourg</li>
+            <li><strong>Address</strong>:  Luxembourg, Luxembourg</li>
             <li><strong>Languages</strong>: English, French, Spanish, Portuguese</li>
           </ul>
 
