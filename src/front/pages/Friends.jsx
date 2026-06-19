@@ -26,9 +26,14 @@ import {
   FiSend,
   FiClock,
   FiInbox,
+  FiStar,
 } from "react-icons/fi";
 
 import useGlobalReducer from "../hooks/useGlobalReducer";
+import { UpgradePro } from "../components/UpgradePro";
+import { getStoredUser } from "../services/auth";
+// Onboarding interactivo — señal "mandó una solicitud de amistad".
+import { announceTourAction, TOUR_ACTIONS } from "../services/tour";
 
 // =============================================================
 // API HELPERS (inlined — no external service file needed)
@@ -87,6 +92,12 @@ const apiUnfriend = (userId) =>
 
 const apiSearchUsers = (q) =>
   fetch(`${API}/api/friends/search?q=${encodeURIComponent(q)}`, {
+    headers: authHeaders(),
+  }).then(handle);
+
+// "Closest people" suggestions + the current friend count / cap.
+const apiSuggestions = () =>
+  fetch(`${API}/api/friends/suggestions`, {
     headers: authHeaders(),
   }).then(handle);
 
@@ -294,6 +305,12 @@ export const Friends = () => {
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
 
+  // "Closest people" suggestions + friend count/cap (from the backend).
+  const [suggestions, setSuggestions] = useState([]);
+  const [sugMeta, setSugMeta] = useState(null); // {friend_count, friend_cap, cap_reached, basis, city}
+  const [me, setMe] = useState(getStoredUser());
+  const handleUpgraded = (u) => { setMe(u); loadSuggestions(); };
+
   // ---- initial load ----
   const reload = async () => {
     setLoading(true);
@@ -311,6 +328,25 @@ export const Friends = () => {
       setError(e.message);
     } finally {
       setLoading(false);
+    }
+    loadSuggestions();
+  };
+
+  // "Closest people" + friend count/cap. Best-effort: a failure here never
+  // blocks the page (the friends list still loads).
+  const loadSuggestions = async () => {
+    try {
+      const data = await apiSuggestions();
+      setSuggestions(data.suggestions || []);
+      setSugMeta({
+        friend_count: data.friend_count,
+        friend_cap: data.friend_cap,
+        cap_reached: data.cap_reached,
+        basis: data.basis,
+        city: data.city,
+      });
+    } catch {
+      /* non-fatal */
     }
   };
 
@@ -363,6 +399,8 @@ export const Friends = () => {
       const { friendship } = await apiSendRequest({ user_id: target.id });
       dispatch({ type: "add_outgoing_request", payload: friendship });
       showToast(`Request sent to ${target.username}`);
+      // Onboarding: el usuario acaba de enviar una solicitud de amistad.
+      announceTourAction(TOUR_ACTIONS.FRIEND_REQUESTED);
       setSearchResults((rs) =>
         rs.map((r) =>
           r.id === target.id
@@ -370,6 +408,22 @@ export const Friends = () => {
             : r
         )
       );
+    } catch (e) {
+      showToast(e.message, "danger");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Add a friend straight from the suggestions list. On the friend-cap 403
+  // the backend's message ("…Upgrade to premium…") is shown via the toast.
+  const handleSendSuggestion = async (target) => {
+    setBusy(`sug-${target.id}`);
+    try {
+      const { friendship } = await apiSendRequest({ user_id: target.id });
+      dispatch({ type: "add_outgoing_request", payload: friendship });
+      showToast(`Request sent to ${target.username}`);
+      setSuggestions((s) => s.filter((u) => u.id !== target.id));
     } catch (e) {
       showToast(e.message, "danger");
     } finally {
@@ -466,6 +520,27 @@ export const Friends = () => {
             {loading ? <Spinner size="sm" animation="border" /> : "Refresh"}
           </Button>
         </div>
+
+        {/* FRIEND COUNT / CAP */}
+        {sugMeta && (
+          <Card className="friends-card mb-4">
+            <Card.Body className="d-flex align-items-center justify-content-between flex-wrap gap-3">
+              <div>
+                <div className="text-light fw-semibold d-flex align-items-center gap-2">
+                  <FiUsers /> {sugMeta.friend_count} / {sugMeta.friend_cap} friends
+                </div>
+                <div className="small text-secondary">
+                  {sugMeta.cap_reached
+                    ? "You've reached your friend limit."
+                    : `${Math.max(0, sugMeta.friend_cap - sugMeta.friend_count)} slots left.`}
+                </div>
+              </div>
+              {sugMeta.cap_reached && me?.account_type === "person" && !me?.is_premium && (
+                <UpgradePro user={me} onUpgraded={handleUpgraded} />
+              )}
+            </Card.Body>
+          </Card>
+        )}
 
         {/* TOAST */}
         {toast && (
@@ -583,6 +658,61 @@ export const Friends = () => {
             )}
           </Card.Body>
         </Card>
+
+        {/* SUGGESTIONS — "closest people" (same city). Hidden while the cap
+            is reached or when there's nothing to suggest. */}
+        {!sugMeta?.cap_reached && suggestions.length > 0 && (
+          <Card className="friends-card mb-4">
+            <Card.Body>
+              <div className="small text-uppercase text-secondary mb-2 fw-semibold d-flex align-items-center gap-2">
+                <FiUsers /> People near you
+                {sugMeta?.basis === "city" && sugMeta?.city && (
+                  <span className="text-secondary text-lowercase">· {sugMeta.city}</span>
+                )}
+              </div>
+              <ListGroup variant="flush">
+                {suggestions.map((u) => (
+                  <ListGroup.Item
+                    key={u.id}
+                    className="bg-transparent text-light border-secondary d-flex justify-content-between align-items-center"
+                  >
+                    <Link
+                      to={`/friends/${u.id}`}
+                      className="d-flex align-items-center gap-3 text-decoration-none text-light"
+                    >
+                      <div style={avatarStyle(u.id)}>{initials(u.username)}</div>
+                      <div>
+                        <div className="fw-semibold d-flex align-items-center gap-2">
+                          {u.username}
+                          {u.is_premium && (
+                            <Badge bg="warning" text="dark">
+                              <FiStar style={{ verticalAlign: "-2px" }} /> Premium
+                            </Badge>
+                          )}
+                        </div>
+                        {(u.premium_coins || 0) > 0 && (
+                          <div className="small" style={{ color: "#f5d678" }}>
+                            <FiStar style={{ verticalAlign: "-2px", color: "#f5b301" }} /> {u.premium_coins}
+                          </div>
+                        )}
+                      </div>
+                    </Link>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => handleSendSuggestion(u)}
+                      disabled={busy === `sug-${u.id}`}
+                    >
+                      {busy === `sug-${u.id}`
+                        ? <Spinner size="sm" animation="border" />
+                        : <><FiUserPlus className="me-1" /> Add</>}
+                    </Button>
+                  </ListGroup.Item>
+                ))}
+              </ListGroup>
+            </Card.Body>
+          </Card>
+        )}
 
         {/* TABS */}
         <Tabs

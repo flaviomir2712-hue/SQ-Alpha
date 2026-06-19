@@ -1,3 +1,4 @@
+
 """
 Tanda 7X — Discover: eventos del mundo real (proveedores externos).
 
@@ -163,6 +164,36 @@ def _tm_summary(ev, venue):
     return "\n".join(parts) or None
 
 
+def _tm_prices(ev):
+    """Best-effort price for a Ticketmaster event.
+
+    priceRanges can hold several tiers (standard, VIP, resale, fees-only) and
+    their order is NOT reliable — blindly taking [0] produced misleading
+    numbers in the Discover price filter. So: prefer the 'standard' tier, drop
+    non-positive / non-numeric values, and make sure min <= max.
+    Returns (price_min, price_max, currency); any field may be None.
+    """
+    ranges = ev.get("priceRanges") or []
+    if not ranges:
+        return None, None, None
+
+    def _num(x):
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None  # 0 / negatives are bogus, treat as unknown
+
+    standard = [r for r in ranges if (r.get("type") or "").lower() == "standard"]
+    chosen = (standard or ranges)[0]
+    pmin = _num(chosen.get("min"))
+    pmax = _num(chosen.get("max"))
+    if pmin and pmax and pmin > pmax:
+        pmin, pmax = pmax, pmin
+    currency = chosen.get("currency") if (pmin or pmax) else None
+    return pmin, pmax, currency
+
+
 def _tm_normalize(ev):
     venues = (ev.get("_embedded") or {}).get("venues") or [{}]
     venue = venues[0]
@@ -177,7 +208,7 @@ def _tm_normalize(ev):
     dates = (ev.get("dates") or {}).get("start") or {}
     time_s = (dates.get("localTime") or "")[:5] or None
 
-    prices = (ev.get("priceRanges") or [{}])[0]
+    prices_min, prices_max, prices_cur = _tm_prices(ev)
 
     classifications = (ev.get("classifications") or [{}])[0]
     category = ((classifications.get("segment") or {}).get("name")) or None
@@ -210,9 +241,9 @@ def _tm_normalize(ev):
         "location":    address or venue.get("name") or "",
         "latitude":    lat,
         "longitude":   lng,
-        "price_min":   prices.get("min"),
-        "price_max":   prices.get("max"),
-        "currency":    prices.get("currency"),
+        "price_min":   prices_min,
+        "price_max":   prices_max,
+        "currency":    prices_cur,
         "category":    category,
         "url":         ev.get("url"),
         "image":       _tm_pick_image(ev),
@@ -691,11 +722,82 @@ PROVIDERS = [
 
 
 # ── Endpoint ─────────────────────────────────────────────────
+def _internal_discover_events(filters):
+    """Public events created by business/influencer accounts, shaped like
+    provider results so they render in the same Discover list. Filtered by
+    keyword, date range and (near-me) distance. Best-effort: never raises."""
+    try:
+        from api.models import db, Event, User
+        from math import radians, sin, cos, asin, sqrt
+    except Exception:
+        return []
+
+    def _haversine(lat1, lng1, lat2, lng2):
+        r = 6371.0
+        dlat = radians(lat2 - lat1)
+        dlng = radians(lng2 - lng1)
+        a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng / 2) ** 2
+        return 2 * r * asin(sqrt(a))
+
+    try:
+        rows = (Event.query.join(User, Event.creator_id == User.id)
+                .filter(Event.is_public.is_(True))
+                .filter(User.account_type.in_(("business", "influencer")))
+                .all())
+    except Exception:
+        return []
+
+    q = (filters.get("q") or "").strip().lower()
+    start = filters.get("start")
+    end = filters.get("end")
+    lat = filters.get("lat")
+    lng = filters.get("lng")
+    radius = filters.get("radius") or 40
+    place = (filters.get("place") or filters.get("city") or "").strip().lower()
+
+    out = []
+    for ev in rows:
+        if q and q not in ((ev.title or "") + " " + (ev.location or "")).lower():
+            continue
+        if start and ev.date and ev.date < start:
+            continue
+        if end and ev.date and ev.date > end:
+            continue
+        # Geo filter: near-me uses distance; city/trip uses a location match.
+        if lat is not None and lng is not None:
+            if ev.latitude is None or ev.longitude is None:
+                continue
+            if _haversine(lat, lng, ev.latitude, ev.longitude) > radius:
+                continue
+        elif place:
+            if place not in (ev.location or "").lower():
+                continue
+        out.append({
+            "id":         "sq-{}".format(ev.id),
+            "title":      ev.title or "(untitled)",
+            "date":       ev.date,
+            "time":       ev.time,
+            "location":   ev.location,
+            "venue_name": None,
+            "latitude":   ev.latitude,
+            "longitude":  ev.longitude,
+            "image":      ev.image,
+            "url":        None,
+            "source":     "SideQuest",
+            "category":   None,
+            # Pro-set ticket price (Phase 3). NULL = free event → no badge.
+            "price_min":  ev.price,
+            "price_max":  ev.price,
+            "currency":   "EUR" if ev.price is not None else None,
+            "incomplete": not ev.date,
+        })
+    return out
+
+
 @discover_bp.route("/events", methods=["GET"])
 @jwt_required()
 def discover_events():
     """Query params:
-      q         keyword libre
       city      modo viaje ("Madrid", "Paris"...)
       lat, lng  modo "near me" (se ignoran si hay city)
       radius    km alrededor de lat/lng (default 40)
@@ -704,10 +806,6 @@ def discover_events():
       page      página del proveedor (default 0)
     """
     configured = [p for p in PROVIDERS if p[2]()]
-    if not configured:
-        return jsonify({
-            "msg": "Event discovery is not configured (missing TICKETMASTER_API_KEY)"
-        }), 503
 
     def _f(name, cast=str):
         v = (request.args.get(name) or "").strip()
@@ -740,10 +838,29 @@ def discover_events():
     if not filters["city"] and (filters["lat"] is None or filters["lng"] is None):
         return jsonify({"msg": "city or lat+lng is required"}), 400
 
+    # Internal events created by businesses/influencers — always fresh,
+    # shown alongside the external providers' results.
+    internal = _internal_discover_events(filters)
+
     cache_key = tuple(sorted((k, str(v)) for k, v in filters.items()))
     cached = _cache_get(cache_key)
     if cached:
-        return jsonify(cached), 200
+        merged = dict(cached)
+        ext = cached.get("events", [])
+        # Internal events are never cached (always fresh). Merge them with
+        # the cached external results, drop any external duplicate of an
+        # internal event, then apply the SAME ordering as the fresh path:
+        # by date first, internal-before-external within the same date,
+        # then by time. Incomplete (dateless) events fall to the end.
+        seen_ids = {e.get("id") for e in internal}
+        combined = internal + [e for e in ext if e.get("id") not in seen_ids]
+        combined.sort(key=lambda e: (
+            e.get("date") or "9999-12-31",
+            0 if e.get("source") == "SideQuest" else 1,
+            e.get("time") or "99:99"))
+        merged["events"] = combined
+        merged["total"] = (cached.get("total", len(ext))) + len(internal)
+        return jsonify(merged), 200
 
     events, total, statuses = [], 0, {}
     for name, fetch, _ in configured:
@@ -759,7 +876,12 @@ def discover_events():
             print("[discover] provider '{}' failed: {}".format(name, exc))
             statuses[name] = "error"
 
-    if not events and all(s == "error" for s in statuses.values()):
+    # Merge internal SideQuest events (created by businesses/influencers)
+    # in front of the providers' results.
+    events = internal + events
+    total += len(internal)
+
+    if not events and statuses and all(s == "error" for s in statuses.values()):
         return jsonify({"msg": "Event providers are unreachable right now"}), 502
 
     # Dedupe entre proveedores (p. ej. Nager y Calendarific repiten los
@@ -801,10 +923,14 @@ def discover_events():
     for e in events:
         e["incomplete"] = not e.get("date")
 
-    # Orden: primero los que tienen fecha (por fecha/hora), los
-    # incompletos al final.
+    # Orden: primero por fecha; dentro de la MISMA fecha, los eventos
+    # internos de SideQuest (creados por businesses/influencers) van ANTES
+    # que los externos; luego por hora. Los incompletos (sin fecha) caen
+    # al final ("9999-12-31"). source == "SideQuest" => 0 (primero).
     events.sort(key=lambda e: (
-        e.get("date") or "9999-12-31", e.get("time") or "99:99"))
+        e.get("date") or "9999-12-31",
+        0 if e.get("source") == "SideQuest" else 1,
+        e.get("time") or "99:99"))
 
     payload = {
         "events": events,

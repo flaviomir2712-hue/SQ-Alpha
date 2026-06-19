@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { Container, Spinner, Alert } from "react-bootstrap";
 // Tanda 7G2 — Migración Leaflet → MapLibre GL.
 //
@@ -296,6 +296,7 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const hasAutoCenteredRef = useRef(false);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const pendingFocusIdRef = useRef(null);
   const [forceShowEventId, setForceShowEventId] = useState(null);
 
@@ -814,6 +815,23 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     setModalOpen(true);
   };
 
+  // En móvil, Discover es una página (/discover): al tocar "+ SideQuest"
+  // sobre un evento externo, éste se guarda en sessionStorage y se vuelve
+  // al mapa. Lo recogemos UNA vez al montar y abrimos el mismo EventModal
+  // prellenado que usa el flujo in-map del desktop. (Sin esto, en móvil se
+  // perdía la creación del evento desde Discover.)
+  useEffect(() => {
+    let raw = null;
+    try { raw = sessionStorage.getItem("sq_discover_prefill"); } catch { raw = null; }
+    if (!raw) return;
+    try { sessionStorage.removeItem("sq_discover_prefill"); } catch { /* ignore */ }
+    try {
+      const ev = JSON.parse(raw);
+      if (ev && typeof ev === "object") handleCreateFromDiscover(ev);
+    } catch { /* ignore malformed */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSaved = (eventOrNull) => {
     fetchEvents();
     onSaved && onSaved(eventOrNull);
@@ -851,7 +869,13 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           <button
             type="button"
             className="sq-discover-fab"
-            onClick={() => setShowDiscover(true)}
+            onClick={() => {
+              // One modal on desktop, one page on mobile: touch devices
+              // open the full /discover page; desktop pops the in-map
+              // overlay (the "modal").
+              if (isTouchDevice()) navigate("/discover");
+              else setShowDiscover(true);
+            }}
             title="Discover real-world events"
             aria-label="Discover events"
           >

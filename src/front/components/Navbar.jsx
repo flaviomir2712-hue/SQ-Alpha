@@ -35,6 +35,8 @@ import {
     FiSend,
     FiUsers,
     FiLogOut,
+    FiBriefcase,
+    FiHeart,
     FiCalendar,
     FiArrowLeft,
     FiSearch,
@@ -576,6 +578,26 @@ export const Navbar = () => {
     // ya no vale, el primer 401 limpia la sesión y redirige (api.js).
     const isLogged = !!cachedUser;
     const currentUserId = cachedUser?.id ?? store.user?.id ?? null;
+
+    // Phase 5b — "Manage" se muestra si el usuario puede gestionar algo:
+    // dueño/influencer O miembro de equipo de alguna empresa (un person
+    // invitado). Lo resuelve /manage/scope, no el account_type.
+    const [canManage, setCanManage] = useState(false);
+    useEffect(() => {
+        if (!isLogged) { setCanManage(false); return; }
+        let cancelled = false;
+        fetch(`${API}/api/manage/scope`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+                if (cancelled || !d) return;
+                setCanManage(d.type === "influencer" ||
+                    (Array.isArray(d.businesses) && d.businesses.length > 0));
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+    }, [isLogged]);
 
     const [showMessages, setShowMessages] = useState(false);
 
@@ -1145,6 +1167,18 @@ export const Navbar = () => {
                                         >
                                             <FiUser className="me-2" /> My Profile
                                         </Dropdown.Item>
+
+                                        <Dropdown.Item as={Link} to="/following">
+                                            <FiHeart className="me-2" /> Following
+                                        </Dropdown.Item>
+
+                                        {/* Phase 5a — hub de gestión, solo para
+                                            cuentas business / influencer. */}
+                                        {canManage && (
+                                            <Dropdown.Item as={Link} to="/manage">
+                                                <FiBriefcase className="me-2" /> Manage
+                                            </Dropdown.Item>
+                                        )}
 
                                         {/* Tanda 4C — Replay del onboarding tour.
                                             Dispara un evento custom que el componente

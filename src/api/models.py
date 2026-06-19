@@ -1,12 +1,19 @@
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import (
-    String, Boolean, Float, ForeignKey, Table, Column, Text,
+    String, Boolean, Float, Integer, ForeignKey, Table, Column, Text,
     DateTime, UniqueConstraint, CheckConstraint, JSON, Index,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 db = SQLAlchemy()
+
+# ── friend caps ──────────────────────────────────────────
+# A free person can hold up to 150 accepted friends (Dunbar-ish). The
+# consumer 'premium' plan lifts that to PREMIUM_FRIEND_CAP. Enforced
+# server-side in the friend-request send / accept routes.
+FREE_FRIEND_CAP = 150
+PREMIUM_FRIEND_CAP = 1000
 
 # ── Association table for event participants ─────────────
 # rsvp: NULL (no answer yet) | 'going' | 'maybe' | 'not_going'
@@ -44,6 +51,86 @@ class User(db.Model):
     email_verified:      Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="true")
 
+    # ── account type ────────────────────────────────
+    # Set at registration via the 3-button chooser (person / company /
+    # influencer). Drives which profile UI the app renders.
+    #   'person'      → regular user (the original flow; default)
+    #   'business'    → owner account; owns one or more Business rows
+    #   'influencer'  → user with public influencer profile (flag-only,
+    #                   reuses username / first_name / profile_picture_url)
+    account_type:       Mapped[str] = mapped_column(
+        String(20), nullable=False, default="person", server_default="person")
+    # Influencer-only fields (NULL for person / business accounts).
+    homebase:           Mapped[str] = mapped_column(String(120), nullable=True)
+    professional_email: Mapped[str] = mapped_column(String(120), nullable=True)
+
+    # ── premium (consumer) cosmetics ────────────────
+    # Reward coins shown on the profile. Purely cosmetic / gamification —
+    # NOT real money and NOT spendable (keeping them spendable would drag
+    # us into EU e-money / PSD2 territory). Visible to the user's friends.
+    # Earned through rewards; a person on the 'premium' plan accrues them.
+    premium_coins: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0")
+
+    # An owner (account_type == 'business') can manage several businesses;
+    # this powers the dropdown profile-switcher in the wireframe.
+    businesses: Mapped[list["Business"]] = relationship(
+        "Business",
+        back_populates="owner",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    # Paid subscriptions (provider-agnostic). A user may hold one user-level
+    # sub (person→premium / influencer→pro, business_id NULL) plus one 'pro'
+    # sub per business they own (business_id set).
+    subscriptions: Mapped[list["Subscription"]] = relationship(
+        "Subscription",
+        back_populates="user",
+        foreign_keys="Subscription.user_id",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    # ── billing-tier helpers ────────────────────────
+    # Billing tier is decoupled from account_type: a paying person is
+    # "premium"; a paying influencer is "pro" (user-level); a business owner
+    # pays "pro" PER COMPANY (see Business.is_pro()).
+    def personal_subscription(self):
+        """The user-level sub (business_id is NULL), if any."""
+        for s in (self.subscriptions or []):
+            if s.business_id is None:
+                return s
+        return None
+
+    def has_active_personal_sub(self, plan=None):
+        sub = self.personal_subscription()
+        if not sub or not sub.is_active():
+            return False
+        return plan is None or sub.plan == plan
+
+    def is_premium(self):
+        """Person with an active user-level 'premium' subscription."""
+        return self.account_type == "person" and self.has_active_personal_sub("premium")
+
+    def is_pro(self):
+        """Pro status for gating pro features / showing the Pro badge:
+        - influencer: an active user-level 'pro' sub;
+        - business owner: owns at least one company with an active 'pro' sub.
+        (Per-event gating uses the specific Business.is_pro().)"""
+        if self.account_type == "influencer":
+            return self.has_active_personal_sub("pro")
+        if self.account_type == "business":
+            return any(b.is_pro() for b in (self.businesses or []))
+        return False
+
+    def friend_cap(self):
+        """Max accepted friends. Free persons: 150. Premium persons: 1000.
+        Business / influencer accounts use follows, not friends, but if they
+        do hold friendships the generous cap applies."""
+        if self.account_type in ("business", "influencer"):
+            return PREMIUM_FRIEND_CAP
+        return PREMIUM_FRIEND_CAP if self.is_premium() else FREE_FRIEND_CAP
+
     def serialize(self):
         return {
             "id":                  self.id,
@@ -57,6 +144,15 @@ class User(db.Model):
             "birthdate":           self.birthdate,
             "phone":               self.phone,
             "email_verified":      bool(self.email_verified),
+            "account_type":        self.account_type or "person",
+            "homebase":            self.homebase,
+            "professional_email":  self.professional_email,
+            # ── billing / premium ──
+            "is_pro":              self.is_pro(),
+            "is_premium":          self.is_premium(),
+            "premium_coins":       self.premium_coins or 0,
+            "subscription":        (self.personal_subscription().serialize()
+                                    if self.personal_subscription() else None),
             "created_at":          self.created_at.isoformat() + "Z" if self.created_at else None,
         }
 
@@ -68,6 +164,9 @@ class User(db.Model):
             "first_name":          self.first_name,
             "last_name":           self.last_name,
             "profile_picture_url": self.profile_picture_url,
+            # Premium cosmetics are public to friends/viewers (that's the point).
+            "premium_coins":       self.premium_coins or 0,
+            "is_premium":          self.is_premium(),
         }
 
 
@@ -84,10 +183,32 @@ class Event(db.Model):
     longitude:  Mapped[float] = mapped_column(Float,       nullable=True)
     details:    Mapped[str]   = mapped_column(Text,        nullable=True)
     image:      Mapped[str]   = mapped_column(Text, nullable=True)
+    # Optional ticket / entry price in EUR. Only pro (subscribed business /
+    # influencer) creators may set it; NULL = free event. Stored as Float
+    # for simple display; no currency math is done server-side.
+    price:      Mapped[float] = mapped_column(Float, nullable=True)
+    # Pro-only private note for the company's TEAM (briefing before the
+    # event). Never shown publicly — only surfaced through the management
+    # endpoints to the creator / team. Team visibility is enforced per role
+    # in the team layer (Phase 5b).
+    team_note:  Mapped[str]   = mapped_column(Text, nullable=True)
+    # Optional event duration in MINUTES (None = unknown). Lets the company
+    # hub's "events at your place" count use the real end time instead of the
+    # 4h fallback window. Any creator may set it; not pro-gated.
+    duration_min: Mapped[int] = mapped_column(Integer, nullable=True)
     # Public events auto-invite all the creator's friends; private events are
     # only visible to people who were explicitly invited.
     is_public:  Mapped[bool]  = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     creator_id: Mapped[int]   = mapped_column(ForeignKey("user.id"), nullable=False)
+    # Optional: the business this event belongs to. NULL for events created
+    # by a regular person. When set, the event shows up in that business's
+    # "events" carousel. creator_id still records WHO (the owner) created it.
+    business_id: Mapped[int]  = mapped_column(ForeignKey("business.id"), nullable=True)
+    # Phase 5b — pending deletion request (double-confirm). When an EDITOR or a
+    # non-manager creator requests a delete, the event is NOT removed yet: a
+    # manager/owner must approve it. NULL = no pending request.
+    pending_delete_by: Mapped[int]      = mapped_column(ForeignKey("user.id"), nullable=True)
+    pending_delete_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
     # Tanda 7B — Validación post-evento del creador:
     #   None  → el evento aún no pasó, o pasó y el creador no respondió
@@ -97,6 +218,7 @@ class Event(db.Model):
     happened:   Mapped[bool]  = mapped_column(Boolean, nullable=True, default=None)
 
     creator:      Mapped["User"]       = relationship("User", foreign_keys=[creator_id])
+    business:     Mapped["Business"]   = relationship("Business", foreign_keys=[business_id])
     participants: Mapped[list["User"]] = relationship(
         "User", secondary=event_participants, lazy="selectin"
     )
@@ -115,13 +237,16 @@ class Event(db.Model):
         lazy="selectin",
     )
 
-    def serialize(self, current_user_id=None, rsvp_map=None):
+    def serialize(self, current_user_id=None, rsvp_map=None, include_team=False):
         """Serialise the event.
 
         `rsvp_map` (optional): a dict {user_id: rsvp_value} for THIS event's
         participants, pre-computed by the caller. When passed, we skip the
         per-event SQL query — used by `get_events` to avoid N+1 queries
         when serialising many events at once.
+
+        `include_team` (management views only): adds the private `team_note`.
+        Never set it for public/participant-facing responses.
         """
         from sqlalchemy import text
         if rsvp_map is None:
@@ -158,12 +283,18 @@ class Event(db.Model):
             "longitude":          self.longitude,
             "details":            self.details,
             "image":              self.image,
+            "price":              self.price,
+            "duration_min":       self.duration_min,
+            # Phase 5b — true if a deletion is awaiting manager approval.
+            "pending_delete":     bool(self.pending_delete_by),
             "is_public":          bool(self.is_public),
             # Tanda 7B — None | true | false (ver comentario en la columna).
             "happened":           self.happened,
             "creator_id":         self.creator_id,
             "creator_username":   self.creator.username if self.creator else None,
             "creator_picture":    creator_picture,
+            "business_id":        self.business_id,
+            "business_name":      self.business.name if self.business else None,
             "participants":       participants_data,
             "participants_count": len(self.participants),
             "going_count":        going_count,
@@ -218,6 +349,10 @@ class Event(db.Model):
                 ]
                 data["pending_suggestions_count"] = len(self.suggestions or [])
 
+        # Private team briefing — management views only.
+        if include_team:
+            data["team_note"] = self.team_note
+
         return data
 
 
@@ -268,6 +403,9 @@ class Friendship(db.Model):
                 "username":            other.username,
                 "bio":                 other.bio,
                 "profile_picture_url": other.profile_picture_url,
+                # Premium cosmetics are visible to friends.
+                "premium_coins":       other.premium_coins or 0,
+                "is_premium":          other.is_premium(),
             } if other else None
             data["direction"] = "outgoing" if self.requester_id == current_user_id else "incoming"
         return data
@@ -599,3 +737,377 @@ class Notification(db.Model):
             "is_read":    self.is_read,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
         }
+
+# ── BUSINESS ──────────────────────────────────────────────
+# A business is NOT a login. It is owned by a User whose
+# account_type == 'business'. One owner can have many businesses
+# (the dropdown profile-switcher in the wireframe).
+#
+# The public business profile renders, in order:
+#   0. profile_picture_url   1. name        2. location
+#   3. hours (JSON)          4. rating()    5. events carousel
+#   6. posts feed
+# `rating` is ALWAYS computed from reviews, never stored.
+class Business(db.Model):
+    __tablename__ = "business"
+
+    id:                  Mapped[int] = mapped_column(primary_key=True)
+    owner_id:            Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    name:                Mapped[str] = mapped_column(String(120), nullable=False)
+    category:            Mapped[str] = mapped_column(String(60),  nullable=True)   # restaurant | bar | cafe | brand | ...
+    location:            Mapped[str] = mapped_column(String(255), nullable=True)
+    latitude:            Mapped[float] = mapped_column(Float, nullable=True)
+    longitude:           Mapped[float] = mapped_column(Float, nullable=True)
+    profile_picture_url: Mapped[str] = mapped_column(Text, nullable=True)
+    description:         Mapped[str] = mapped_column(Text, nullable=True)
+    # Opening hours as JSON, e.g.
+    #   {"mon": {"open": "09:00", "close": "18:00"}, "tue": {...}, ...}
+    # A missing day == closed. Kept as JSON to stay flexible without
+    # extra tables.
+    hours:               Mapped[dict] = mapped_column(JSON, nullable=True, default=dict)
+    created_at:          Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # ── company verification & billing (per-company Pro) ──
+    # The owner pays per company, so each one uploads a proof document
+    # (registration certificate, ID, etc.) and is verified before going live.
+    proof_url: Mapped[str]  = mapped_column(Text, nullable=True)
+    verified:  Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+
+    owner: Mapped["User"] = relationship("User", back_populates="businesses", foreign_keys=[owner_id])
+    posts: Mapped[list["BusinessPost"]] = relationship(
+        "BusinessPost",
+        back_populates="business",
+        cascade="all, delete-orphan",
+        order_by="BusinessPost.created_at.desc()",
+        lazy="selectin",
+    )
+    reviews: Mapped[list["Review"]] = relationship(
+        "Review",
+        back_populates="business",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    # Events created under this business (the carousel). FK lives on Event;
+    # this side is read-only (events are assigned a business at creation
+    # via Event.business_id, never through this collection).
+    events: Mapped[list["Event"]] = relationship(
+        "Event",
+        foreign_keys="Event.business_id",
+        viewonly=True,
+        lazy="selectin",
+    )
+    # One 'pro' subscription per company (provider-agnostic). NULL = not pro.
+    subscription: Mapped["Subscription"] = relationship(
+        "Subscription",
+        back_populates="business",
+        foreign_keys="Subscription.business_id",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    def is_pro(self):
+        """This company has an active 'pro' subscription."""
+        return self.subscription is not None and self.subscription.is_active()
+
+    def rating(self):
+        """Average review score (1-5) rounded to 1 decimal, or None."""
+        vals = [r.rating for r in (self.reviews or []) if r.rating is not None]
+        if not vals:
+            return None
+        return round(sum(vals) / len(vals), 1)
+
+    def serialize(self, include_feed=False, current_user_id=None):
+        data = {
+            "id":                  self.id,
+            "owner_id":            self.owner_id,
+            "owner_username":      self.owner.username if self.owner else None,
+            "name":                self.name,
+            "category":            self.category,
+            "location":            self.location,
+            "latitude":            self.latitude,
+            "longitude":           self.longitude,
+            "profile_picture_url": self.profile_picture_url,
+            "description":         self.description,
+            "hours":               self.hours or {},
+            "rating":              self.rating(),
+            "reviews_count":       len(self.reviews or []),
+            "events_count":        len(self.events or []),
+            "posts_count":         len(self.posts or []),
+            # ── verification & billing ──
+            "verified":            bool(self.verified),
+            "has_proof":           bool(self.proof_url),
+            "is_pro":              self.is_pro(),
+            "created_at":          self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+        if include_feed:
+            data["posts"]   = [p.serialize() for p in (self.posts or [])]
+            data["events"]  = [e.serialize(current_user_id=current_user_id) for e in (self.events or [])]
+            data["reviews"] = [r.serialize() for r in (self.reviews or [])]
+        return data
+
+
+# ── BUSINESS POST ─────────────────────────────────────────
+# An entry in the business's feed (item 6 of the business profile).
+class BusinessPost(db.Model):
+    __tablename__ = "business_post"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=False, index=True)
+    image:       Mapped[str] = mapped_column(Text, nullable=True)
+    text:        Mapped[str] = mapped_column(Text, nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    business: Mapped["Business"] = relationship("Business", back_populates="posts")
+
+    def serialize(self):
+        return {
+            "id":          self.id,
+            "business_id": self.business_id,
+            "image":       self.image,
+            "text":        self.text,
+            "created_at":  self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+# ── REVIEW ────────────────────────────────────────────────
+# A 1-5 star review left by a User on a Business (item 4 — drives the
+# computed rating). One review per (business, author); re-posting updates
+# the existing row at the route level.
+class Review(db.Model):
+    __tablename__ = "review"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=False, index=True)
+    author_id:   Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    rating:      Mapped[int] = mapped_column(Integer, nullable=False)
+    text:        Mapped[str] = mapped_column(Text, nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    business: Mapped["Business"] = relationship("Business", back_populates="reviews")
+    author:   Mapped["User"]     = relationship("User", foreign_keys=[author_id])
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "author_id", name="uq_review_author"),
+        CheckConstraint("rating >= 1 AND rating <= 5", name="ck_review_rating_range"),
+    )
+
+    def serialize(self):
+        return {
+            "id":              self.id,
+            "business_id":     self.business_id,
+            "author_id":       self.author_id,
+            "author_username": self.author.username if self.author else None,
+            "author_picture":  self.author.profile_picture_url if self.author else None,
+            "rating":          self.rating,
+            "text":            self.text,
+            "created_at":      self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+# ── EVENT OPINION ─────────────────────────────────────────
+# A short opinion a user (typically an influencer) leaves about an event
+# they attended. Surfaced on the influencer profile: each "place went"
+# event card swaps the usual "Details" button for "@username's opinion".
+# One opinion per (author, event).
+class EventOpinion(db.Model):
+    __tablename__ = "event_opinion"
+
+    id:         Mapped[int] = mapped_column(primary_key=True)
+    author_id:  Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    event_id:   Mapped[int] = mapped_column(ForeignKey("event.id"), nullable=False, index=True)
+    text:       Mapped[str] = mapped_column(Text, nullable=True)
+    rating:     Mapped[int] = mapped_column(Integer, nullable=True)   # optional 1-5
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    author: Mapped["User"]  = relationship("User", foreign_keys=[author_id])
+    event:  Mapped["Event"] = relationship("Event", foreign_keys=[event_id])
+
+    __table_args__ = (
+        UniqueConstraint("author_id", "event_id", name="uq_opinion_author_event"),
+        CheckConstraint("rating IS NULL OR (rating >= 1 AND rating <= 5)",
+                        name="ck_opinion_rating_range"),
+    )
+
+    def serialize(self):
+        return {
+            "id":              self.id,
+            "author_id":       self.author_id,
+            "author_username": self.author.username if self.author else None,
+            "event_id":        self.event_id,
+            "text":            self.text,
+            "rating":          self.rating,
+            "created_at":      self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+# ── FOLLOW ────────────────────────────────────────────────
+# A one-directional follow. Targets are EITHER a Business (place) OR a
+# User that is an influencer/owner — never both (XOR enforced). Unlike
+# Friendship, follows are not mutual and need no acceptance: businesses
+# and influencers "have only followers, not friends".
+class Follow(db.Model):
+    __tablename__ = "follow"
+
+    id:             Mapped[int] = mapped_column(primary_key=True)
+    follower_id:    Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    business_id:    Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=True, index=True)
+    target_user_id: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=True, index=True)
+    created_at:     Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    follower:    Mapped["User"]     = relationship("User", foreign_keys=[follower_id])
+    target_user: Mapped["User"]     = relationship("User", foreign_keys=[target_user_id])
+    business:    Mapped["Business"] = relationship("Business", foreign_keys=[business_id])
+
+    __table_args__ = (
+        UniqueConstraint("follower_id", "business_id", name="uq_follow_business"),
+        UniqueConstraint("follower_id", "target_user_id", name="uq_follow_user"),
+        # Exactly one of business_id / target_user_id must be set (XOR).
+        CheckConstraint(
+            "(business_id IS NOT NULL) <> (target_user_id IS NOT NULL)",
+            name="ck_follow_one_target"),
+    )
+
+
+# ── SUBSCRIPTION ──────────────────────────────────────────
+# One paid subscription per user. Provider-agnostic on purpose: the column
+# set carries whatever a real provider (Stripe, Paddle, Lemon Squeezy…)
+# would give us, but nothing here imports or assumes any specific provider.
+# In production the `status` / `current_period_end` are driven by the
+# provider's webhook; in dev a 'stub' provider lets us activate locally
+# without a real charge so the rest of the app can be exercised end-to-end.
+#
+# plan:
+#   'pro'      → business / influencer professional features (priced events…)
+#   'premium'  → person consumer perks (bigger friend cap, rewards, coins)
+class Subscription(db.Model):
+    __tablename__ = "subscription"
+
+    id:      Mapped[int] = mapped_column(primary_key=True)
+    # Owner of the subscription. NO LONGER unique: a user can hold one
+    # user-level sub (person→premium / influencer→pro, business_id NULL) AND
+    # one 'pro' sub per business they own (business_id set).
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("user.id"), nullable=False, index=True)
+    # Set => this is a per-company 'pro' sub (one per business). NULL => the
+    # user-level sub. Unique so a business can't have two subs (multiple NULLs
+    # are allowed, so user-level subs are deduped in code, not by the DB).
+    business_id: Mapped[int] = mapped_column(
+        ForeignKey("business.id"), nullable=True, unique=True, index=True)
+
+    plan:    Mapped[str] = mapped_column(String(20), nullable=False)  # 'pro' | 'premium'
+    # Lifecycle (mirrors typical provider states):
+    #   'active' | 'trialing' | 'past_due' | 'canceled' | 'incomplete'
+    status:  Mapped[str] = mapped_column(
+        String(20), nullable=False, default="incomplete", server_default="incomplete")
+
+    # Provider linkage — all NULLable until a real provider is wired in.
+    # provider: 'stub' (dev, no charge) | 'stripe' | 'paddle' | 'lemonsqueezy'
+    provider:                 Mapped[str] = mapped_column(String(20),  nullable=True)
+    provider_customer_id:     Mapped[str] = mapped_column(String(120), nullable=True)
+    provider_subscription_id: Mapped[str] = mapped_column(String(120), nullable=True)
+
+    current_period_end: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    created_at:         Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at:         Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user: Mapped["User"] = relationship(
+        "User", foreign_keys=[user_id], back_populates="subscriptions")
+    business: Mapped["Business"] = relationship(
+        "Business", foreign_keys=[business_id], back_populates="subscription")
+
+    def is_active(self):
+        """Active if status is active/trialing AND the period hasn't lapsed."""
+        if self.status not in ("active", "trialing"):
+            return False
+        if self.current_period_end and self.current_period_end < datetime.utcnow():
+            return False
+        return True
+
+    def serialize(self):
+        return {
+            "id":                 self.id,
+            "plan":               self.plan,
+            "status":             self.status,
+            "active":             self.is_active(),
+            "provider":           self.provider,
+            "business_id":        self.business_id,
+            "current_period_end": self.current_period_end.isoformat() + "Z" if self.current_period_end else None,
+        }
+
+
+# ── TEAM MEMBERSHIP & INVITES (Phase 5b) ──────────────────
+# Per-company teams with roles. The OWNER is derived from Business.owner_id
+# (no row here); this table holds manager / editor / viewer.
+# `can_manage_managers` is the owner-granted "co-management" authorization
+# that lets a manager manage OTHER managers too.
+TEAM_ROLES = ("manager", "editor", "viewer")
+
+
+class TeamMembership(db.Model):
+    __tablename__ = "team_membership"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=False, index=True)
+    user_id:     Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    role:        Mapped[str] = mapped_column(String(20), nullable=False, default="viewer", server_default="viewer")
+    # Owner-granted authorization to manage OTHER managers (co-management).
+    can_manage_managers: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
+    created_at:  Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
+
+    business: Mapped["Business"] = relationship("Business", foreign_keys=[business_id])
+    user:     Mapped["User"]     = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "user_id", name="uq_team_membership_biz_user"),
+    )
+
+    def serialize(self):
+        return {
+            "user_id":             self.user_id,
+            "username":            self.user.username if self.user else None,
+            "profile_picture_url": self.user.profile_picture_url if self.user else None,
+            "role":                self.role,
+            "can_manage_managers": bool(self.can_manage_managers),
+            "business_id":         self.business_id,
+        }
+
+
+class TeamInvite(db.Model):
+    __tablename__ = "team_invite"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    business_id: Mapped[int] = mapped_column(ForeignKey("business.id"), nullable=False, index=True)
+    role:        Mapped[str] = mapped_column(String(20), nullable=False, default="viewer", server_default="viewer")
+    # Single-use token: the accept endpoint consumes it (status → accepted).
+    token:       Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # Targeted invite: email OR username set → must match the accepting user.
+    # Both NULL → open single-use link (first account that opens it joins).
+    email:            Mapped[str] = mapped_column(String(255), nullable=True)
+    invited_username: Mapped[str] = mapped_column(String(80), nullable=True)
+    status:      Mapped[str] = mapped_column(String(20), nullable=False, default="pending", server_default="pending")
+    created_by:  Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=False)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
+    expires_at:  Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    accepted_by: Mapped[int] = mapped_column(ForeignKey("user.id"), nullable=True)
+
+    business: Mapped["Business"] = relationship("Business", foreign_keys=[business_id])
+
+    def serialize(self, include_token=False):
+        d = {
+            "id":               self.id,
+            "business_id":      self.business_id,
+            "role":             self.role,
+            "email":            self.email,
+            "invited_username": self.invited_username,
+            "status":           self.status,
+            "targeted":         bool(self.email or self.invited_username),
+            "expires_at":       self.expires_at.isoformat() + "Z" if self.expires_at else None,
+            "created_at":       self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+        if include_token:
+            d["token"] = self.token
+        return d

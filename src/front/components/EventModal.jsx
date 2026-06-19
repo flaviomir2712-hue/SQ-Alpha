@@ -38,11 +38,18 @@ import {
   FiGlobe,
   FiLock,
   FiMaximize2,
+  FiStar,
+  FiTag,
+  FiBriefcase,
 } from "react-icons/fi";
 
 // Tanda 7H — tiempo real para el chat de la pestaña (ping chat:message).
 // Tanda 7T — + typing indicator (sendTypingPing, con throttle interno).
 import { getSocket, sendTypingPing } from "../services/socket";
+import { UpgradePro } from "./UpgradePro";
+import { setSession } from "../services/auth";
+// Onboarding interactivo — señal "creó/editó un evento" para que el tour avance.
+import { announceTourAction, TOUR_ACTIONS } from "../services/tour";
 
 // =============================================================
 // INLINE API
@@ -68,6 +75,10 @@ const apiGetEvent       = async (id) => await fetch(`${API}/api/events/${id}`, {
 const apiCreateEvent    = (body) => fetch(`${API}/api/events`,        { method: "POST",   headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
 const apiUpdateEvent    = (id, body) => fetch(`${API}/api/events/${id}`,  { method: "PUT",  headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
 const apiDeleteEvent    = (id) => fetch(`${API}/api/events/${id}`,  { method: "DELETE", headers: authHeaders() }).then(handle);
+// Phase 5b — role gating + deletion approval.
+const apiManageScope     = () => fetch(`${API}/api/manage/scope`, { headers: authHeaders() }).then(handle);
+const apiApproveDeletion = (id) => fetch(`${API}/api/events/${id}/deletion/approve`, { method: "POST", headers: authHeaders() }).then(handle);
+const apiCancelDeletion  = (id) => fetch(`${API}/api/events/${id}/deletion/cancel`,  { method: "POST", headers: authHeaders() }).then(handle);
 
 // Multi-invite (back-compat: array of user ids in one call)
 const apiInviteBatch    = (id, userIds) =>
@@ -196,6 +207,18 @@ const EVENT_CSS = `
 .event-photo-preview {
   width: 100%; max-height: 220px; object-fit: cover;
   border-radius: 12px; border: 1px solid #262a36;
+}
+.sq-pro-lock {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.75rem; flex-wrap: wrap;
+  background: #14121c; border: 1px dashed #4a3a1f; border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+}
+.sq-pro-lock-text { color: #c9b88a; font-size: 0.85rem; }
+.sq-price-readonly {
+  display: inline-block; font-weight: 700; color: #e9ecef;
+  background: #161922; border: 1px solid #262a36; border-radius: 8px;
+  padding: 0.35rem 0.7rem;
 }
 .event-photo-empty {
   width: 100%; height: 160px;
@@ -542,12 +565,26 @@ export const EventModal = ({
   // creación; todo queda 100% editable por el usuario.
   prefillEvent = null,
   currentUser = null,
+  // Phase 5a/b — al crear desde el hub de una empresa, ata el evento a ella.
+  businessId = null,
   onSaved = () => {},
   onDeleted = () => {},
 }) => {
   const isEditMode = !!eventId;
   const [tab, setTab] = useState("details");
   const navigate = useNavigate();
+
+  // Local copy of the current user so an in-modal upgrade (Go Pro) flips
+  // is_pro immediately without remounting. Kept in sync with the prop.
+  const [meUser, setMeUser] = useState(currentUser);
+  useEffect(() => { setMeUser(currentUser); }, [currentUser]);
+  const canSetPrice = meUser?.account_type === "business" || meUser?.account_type === "influencer";
+  const isPro = !!meUser?.is_pro;
+  const handleUpgraded = (u) => { setMeUser(u); setSession(u); };
+
+  // Phase 5b — the current user's role on the event's COMPANY (null for
+  // non-business events or non-members): owner | manager | editor | viewer.
+  const [myBizRole, setMyBizRole] = useState(null);
 
   // Location autocomplete state. The search is driven by the input's own
   // onChange (handleLocationChange), so the dropdown only opens when the
@@ -566,6 +603,8 @@ export const EventModal = ({
     location: "",
     details: "",
     image: "",
+    price: "",
+    duration_min: "",
     is_public: false,
     latitude: null,
     longitude: null,
@@ -665,6 +704,8 @@ export const EventModal = ({
         location:  prefillEvent?.location || "",
         details:   prefillEvent?.details  || "",
         image:     prefillEvent?.image    || "",
+        price:     prefillEvent?.price ?? "",
+        duration_min: prefillEvent?.duration_min ?? "",
         is_public: false,
         latitude:  prefillCoords?.latitude ?? null,
         longitude: prefillCoords?.longitude ?? null,
@@ -743,6 +784,16 @@ export const EventModal = ({
     try {
       const data = await apiGetEvent(eventId);
       setEventData(data);
+      // Phase 5b — resolve my role on this event's company (for role-gating).
+      if (data.business_id) {
+        try {
+          const scope = await apiManageScope();
+          const b = (scope.businesses || []).find((x) => x.id === data.business_id);
+          setMyBizRole(b ? b.role : null);
+        } catch (_) { setMyBizRole(null); }
+      } else {
+        setMyBizRole(null);
+      }
       setForm({
         title:     data.title || "",
         date:      data.date  || "",
@@ -750,6 +801,8 @@ export const EventModal = ({
         location:  data.location  || "",
         details:   data.details   || "",
         image:     data.image     || "",
+        price:     data.price ?? "",
+        duration_min: data.duration_min ?? "",
         is_public: !!data.is_public,
         latitude:  data.latitude,
         longitude: data.longitude,
@@ -969,14 +1022,14 @@ export const EventModal = ({
     // Field validation only matters for the creator path (which is the
     // only one that mutates event details). A non-creator with selected
     // suggestions skips this check entirely.
-    if (isCreator && (!form.date || !form.time || !form.location)) {
+    if (canEdit && (!form.date || !form.time || !form.location)) {
       showToast("date, time and location are required", "danger");
       return;
     }
 
-    // Nothing to send for a non-creator without any pending suggestion —
+    // Nothing to send for a viewer/participant without a pending suggestion —
     // shouldn't reach here (the button is hidden) but guard anyway.
-    if (!isCreator && selectedToSuggest.size === 0) {
+    if (!canEdit && selectedToSuggest.size === 0) {
       showToast("Select at least one friend to suggest", "danger");
       return;
     }
@@ -997,16 +1050,25 @@ export const EventModal = ({
           is_public: form.is_public,
           latitude:  form.latitude,
           longitude: form.longitude,
+          // Optional event duration in minutes (not pro-gated).
+          duration_min: form.duration_min === "" ? null : Number(form.duration_min),
           invitedFriends: invitedIds,
+          // Tie the event to a company when created from its hub.
+          ...(businessId ? { business_id: businessId } : {}),
+          // Pro-only: only send price when the creator can actually set one,
+          // so non-pro accounts never hit the backend's 403.
+          ...(isPro ? { price: form.price === "" ? null : Number(form.price) } : {}),
         });
         showToast("Event created");
+        // Onboarding: el usuario acaba de crear su primer evento.
+        announceTourAction(TOUR_ACTIONS.EVENT_CREATED);
         onSaved(data.event);
         onHide();
         return;
       }
 
-      // ─── EDIT MODE / CREATOR ───
-      if (isCreator) {
+      // ─── EDIT MODE / CREATOR or EDITOR+ ───
+      if (canEdit) {
         // 1. Save the event details first.
         const data = await apiUpdateEvent(eventId, {
           title:     form.title,
@@ -1017,9 +1079,13 @@ export const EventModal = ({
           is_public: form.is_public,
           latitude:  form.latitude,
           longitude: form.longitude,
+          duration_min: form.duration_min === "" ? null : Number(form.duration_min),
+          ...(isPro ? { price: form.price === "" ? null : Number(form.price) } : {}),
         });
         setEventData(data.event);
         onSaved(data.event);
+        // Onboarding: el creador/editor acaba de guardar una edición.
+        announceTourAction(TOUR_ACTIONS.EVENT_UPDATED);
 
         // 2. If the creator selected friends in the "Invite" list,
         //    send them as one batch. A failure here doesn't roll back
@@ -1109,7 +1175,7 @@ export const EventModal = ({
       const data = await apiRefuseSuggestion(eventId, sid);
       setEventData(data.event);
       await reloadSuggestions();
-      showToast("Sugerencia rechazada");
+      showToast("Suggestion declined");
       onSaved(data.event);
     } catch (e) {
       showToast(e.message, "danger");
@@ -1142,7 +1208,7 @@ export const EventModal = ({
       const data = await apiRefuseAllSuggestions(eventId);
       setEventData(data.event);
       await reloadSuggestions();
-      showToast("Sugerencias rechazadas");
+      showToast("Suggestions declined");
       onSaved(data.event);
     } catch (e) {
       showToast(e.message, "danger");
@@ -1206,6 +1272,33 @@ export const EventModal = ({
     }
   };
 
+  // Phase 5b — manager/owner approves a pending deletion (the 2nd confirmation).
+  const handleApproveDeletion = async () => {
+    setDeleting(true);
+    try {
+      await apiApproveDeletion(eventId);
+      onDeleted(eventId);
+      onHide();
+    } catch (e) {
+      showToast(e.message, "danger");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Cancel a pending deletion request (the requester or a manager/owner).
+  const handleCancelDeletion = async () => {
+    try {
+      await apiCancelDeletion(eventId);
+      const data = await apiGetEvent(eventId);
+      setEventData(data);
+      showToast("Deletion request cancelled");
+      onSaved(data);
+    } catch (e) {
+      showToast(e.message, "danger");
+    }
+  };
+
   const handleDelete = async () => {
     if (!isEditMode) return;
     const ok = window.confirm(
@@ -1215,9 +1308,17 @@ export const EventModal = ({
     setDeleting(true);
     setError(null);
     try {
-      await apiDeleteEvent(eventId);
-      onDeleted(eventId);
-      onHide();
+      const res = await apiDeleteEvent(eventId);
+      // Phase 5b — an editor / non-manager creator on a company event gets a
+      // pending deletion REQUEST (202) instead of an immediate delete.
+      if (res && res.code === "pending_approval") {
+        showToast("Deletion requested — pending a manager's approval", "warning");
+        if (res.event) setEventData(res.event);
+        onSaved(res.event || { id: eventId });
+      } else {
+        onDeleted(eventId);
+        onHide();
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1370,13 +1471,23 @@ export const EventModal = ({
   // DERIVED
   // =====================================================
   const isCreator = eventData?.is_creator ?? !isEditMode;
+  // Phase 5b — team role gating. Editor+ (or the creator) may edit the event;
+  // viewers are read-only. (myBizRole = my role on the event's company.)
+  const eventBizId = eventData?.business_id ?? null;
+  const isMgrOrOwner = ["owner", "manager"].includes(myBizRole);
+  const canEdit = !isEditMode || isCreator ||
+    (!!eventBizId && ["owner", "manager", "editor"].includes(myBizRole));
   // Tanda 7B/7C — Los eventos pasados no pueden borrarse NUNCA: ocultamos
   // el botón Delete del footer. El backend es quien manda (DELETE → 409);
   // esto solo evita ofrecer una acción que va a fallar. Los eventos que el
   // creador marca como "no realizados" desaparecen de las listas (los
   // filtra el backend) pero se conservan en la base como dato.
   const isPastEvent = isEditMode && eventIsPast(eventData?.date, eventData?.time);
-  const canDeleteEvent = isEditMode && isCreator && !isPastEvent;
+  const canDeleteEvent = isEditMode && !isPastEvent &&
+    (isCreator || ["owner", "manager", "editor"].includes(myBizRole));
+  // Phase 5b — a deletion awaiting manager approval (double-confirm).
+  const hasPendingDelete = isEditMode && !!eventData?.pending_delete;
+  const canApproveDelete = hasPendingDelete && isMgrOrOwner;
   const participants = eventData?.participants || [];
   const participantIds = new Set(participants.map((p) => p.id));
 
@@ -1394,8 +1505,8 @@ export const EventModal = ({
   // literally nothing for them to save.
   const showSaveButton =
     !isEditMode ||                       // create mode → always
-    isCreator ||                         // creator edit mode → always
-    selectedToSuggest.size > 0;          // non-creator with pending suggestion
+    canEdit ||                           // creator / editor+ edit mode → always
+    selectedToSuggest.size > 0;          // viewer/participant with a suggestion
 
   // =====================================================
   // RENDER
@@ -1450,13 +1561,25 @@ export const EventModal = ({
               </div>
             )}
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: "0.78rem", color: "#6c757d" }}>Creado por</div>
+              <div style={{ fontSize: "0.78rem", color: "#6c757d" }}>Created by</div>
               <strong style={{ color: "#e9ecef", fontSize: "0.9rem" }}>
                 {eventData.creator_username || eventData.creator_username}
               </strong>
+              {eventData.business_id && (
+                <div style={{ marginTop: 2 }}>
+                  <a
+                    href={`/business/${eventData.business_id}`}
+                    onClick={(ev) => { ev.preventDefault(); onHide(); navigate(`/business/${eventData.business_id}`); }}
+                    style={{ fontSize: "0.78rem", color: "#6366f1", textDecoration: "none" }}
+                  >
+                    <FiBriefcase style={{ marginRight: 4 }} />
+                    Organized by {eventData.business_name || "the company"}
+                  </a>
+                </div>
+              )}
             </div>
             {eventData.going_count > 0 && (
-              <Badge bg="info">{eventData.going_count} voy</Badge>
+              <Badge bg="info">{eventData.going_count} going</Badge>
             )}
           </div>
         )}
@@ -1520,29 +1643,49 @@ export const EventModal = ({
                     value={form.title}
                     onChange={handleField}
                     placeholder="e.g. Saturday padel"
-                    disabled={isEditMode && !isCreator}
+                    disabled={isEditMode && !canEdit}
                   />
                 </Col>
 
-                <Col md={6}>
+                <Col md={4}>
                   <Form.Label><FiCalendar className="me-1" /> Date</Form.Label>
                   <Form.Control
                     type="date"
                     name="date"
                     value={form.date}
                     onChange={handleField}
-                    disabled={isEditMode && !isCreator}
+                    disabled={isEditMode && !canEdit}
                   />
                 </Col>
-                <Col md={6}>
+                <Col md={4}>
                   <Form.Label><FiClock className="me-1" /> Time</Form.Label>
                   <Form.Control
                     type="time"
                     name="time"
                     value={form.time}
                     onChange={handleField}
-                    disabled={isEditMode && !isCreator}
+                    disabled={isEditMode && !canEdit}
                   />
+                </Col>
+                {/* Optional duration — sharpens the company hub's "events at
+                    your place" count (else it assumes a 4h window). */}
+                <Col md={4}>
+                  <Form.Label><FiClock className="me-1" /> Duration</Form.Label>
+                  <Form.Select
+                    name="duration_min"
+                    value={form.duration_min}
+                    onChange={handleField}
+                    disabled={isEditMode && !canEdit}
+                  >
+                    <option value="">Not set</option>
+                    <option value="60">1 hour</option>
+                    <option value="90">1.5 hours</option>
+                    <option value="120">2 hours</option>
+                    <option value="180">3 hours</option>
+                    <option value="240">4 hours</option>
+                    <option value="360">6 hours</option>
+                    <option value="480">8 hours</option>
+                  </Form.Select>
                 </Col>
 
                 <Col xs={12} style={{ position: "relative" }}>
@@ -1557,7 +1700,7 @@ export const EventModal = ({
                     }}
                     placeholder="Start typing the address..."
                     autoComplete="off"
-                    disabled={isEditMode && !isCreator}
+                    disabled={isEditMode && !canEdit}
                   />
                   {/* Autocomplete dropdown */}
                   {showAddressDropdown && addressSuggestions.length > 0 && (
@@ -1636,9 +1779,52 @@ export const EventModal = ({
                     value={form.details}
                     onChange={handleField}
                     placeholder="Notes for participants..."
-                    disabled={isEditMode && !isCreator}
+                    disabled={isEditMode && !canEdit}
                   />
                 </Col>
+
+                {/* ─────────── PRO: ticket price ───────────
+                    business / influencer accounts get the editable (Pro) or
+                    locked (free) price control; everyone else just SEES the
+                    price when the event has one. */}
+                {canSetPrice ? (
+                  <Col xs={12}>
+                    <Form.Label>
+                      <FiTag className="me-1" /> Ticket price <span className="text-secondary">(optional)</span>
+                    </Form.Label>
+                    {isPro ? (
+                      <>
+                        <InputGroup>
+                          <InputGroup.Text>€</InputGroup.Text>
+                          <Form.Control
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            name="price"
+                            value={form.price}
+                            onChange={handleField}
+                            placeholder="Free"
+                            disabled={isEditMode && !canEdit}
+                          />
+                        </InputGroup>
+                        <small className="text-secondary">Leave empty for a free event.</small>
+                      </>
+                    ) : (
+                      <div className="sq-pro-lock">
+                        <div className="sq-pro-lock-text">
+                          <FiLock className="me-1" />
+                          Add an entry/ticket price with <strong>Pro</strong>.
+                        </div>
+                        <UpgradePro user={meUser} onUpgraded={handleUpgraded} />
+                      </div>
+                    )}
+                  </Col>
+                ) : (form.price !== "" && form.price != null) ? (
+                  <Col xs={12}>
+                    <Form.Label><FiTag className="me-1" /> Price</Form.Label>
+                    <div className="sq-price-readonly">€ {Number(form.price).toFixed(2)}</div>
+                  </Col>
+                ) : null}
 
                 {/* ─────────── VISIBILITY (public / private) ─────────── */}
                 <Col xs={12}>
@@ -1648,7 +1834,7 @@ export const EventModal = ({
                       type="button"
                       className={`vis-option ${!form.is_public ? "active" : ""}`}
                       onClick={() => setForm((f) => ({ ...f, is_public: false }))}
-                      disabled={isEditMode && !isCreator}
+                      disabled={isEditMode && !canEdit}
                     >
                       <FiLock className="me-2" />
                       <span>
@@ -1660,7 +1846,7 @@ export const EventModal = ({
                       type="button"
                       className={`vis-option ${form.is_public ? "active" : ""}`}
                       onClick={() => setForm((f) => ({ ...f, is_public: true }))}
-                      disabled={isEditMode && !isCreator}
+                      disabled={isEditMode && !canEdit}
                     >
                       <FiGlobe className="me-2" />
                       <span>
@@ -2160,7 +2346,27 @@ export const EventModal = ({
             pasado, la única acción pendiente es la confirmación ("¿pasó
             como previsto?") que llega por la campana de notificaciones,
             nunca el borrado. */}
-        {canDeleteEvent && (
+        {hasPendingDelete ? (
+          <div className="me-auto d-flex align-items-center gap-2 flex-wrap">
+            <span className="small" style={{ color: "#facc15" }}>
+              <FiTrash2 className="me-1" /> Deletion pending approval
+            </span>
+            {canApproveDelete ? (
+              <>
+                <Button variant="danger" size="sm" onClick={handleApproveDeletion} disabled={deleting}>
+                  Approve deletion
+                </Button>
+                <Button variant="outline-secondary" size="sm" onClick={handleCancelDeletion} disabled={deleting}>
+                  Reject
+                </Button>
+              </>
+            ) : (
+              <Button variant="outline-secondary" size="sm" onClick={handleCancelDeletion} disabled={deleting}>
+                Cancel request
+              </Button>
+            )}
+          </div>
+        ) : canDeleteEvent ? (
           <Button
             variant="outline-danger"
             onClick={handleDelete}
@@ -2172,12 +2378,11 @@ export const EventModal = ({
               : <><FiTrash2 className="me-1" /> Delete event</>
             }
           </Button>
-        )}
-        {isEditMode && isCreator && !canDeleteEvent && (
+        ) : (isEditMode && canEdit && !canDeleteEvent) ? (
           <span className="me-auto small text-secondary fst-italic">
             Past events can't be deleted
           </span>
-        )}
+        ) : null}
         <Button variant="outline-light" onClick={onHide}>Close</Button>
         {isEditMode && eventData?.chat_room_id && (
           <Button

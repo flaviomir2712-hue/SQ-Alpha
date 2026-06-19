@@ -1,8 +1,0 @@
-.event-card { transition: transform 0.3s ease, box-shadow 0.3s ease; border: none; overflow: hidden; border-radius: 12px; background: white; }
-.event-card:hover { transform: translateY(-8px); box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15) !important; }
-.event-card-image { height: 200px; object-fit: cover; background: linear-gradient(135deg, #ecf0f1 0%, #bdc3c7 100%); }
-.event-category-badge { font-size: 0.75rem; padding: 0.4rem 0.8rem; text-transform: uppercase; }
-.event-card-title { font-size: 1.1rem; font-weight: 700; color: #2c3e50; margin-bottom: 0.75rem; }
-.event-card-details { display: flex; flex-direction: column; gap: 0.5rem; }
-.event-card-details p { margin: 0; display: flex; align-items: center; gap: 0.5rem; color: #7f8c8d; font-size: 0.9rem; }
-@media (max-width: 768px) { .event-card-title { font-size: 1rem; } .event-card-image { height: 150px; } }

@@ -27,13 +27,17 @@ import {
   FiActivity,
   FiUser,
   FiCake,
+  FiStar,
 } from "react-icons/fi";
+
+import { UpgradePro } from "../components/UpgradePro";
+import { CompaniesMenu } from "../components/CompaniesMenu";
+import { setSession } from "../services/auth";
 
 // =============================================================
 // INLINE API
 // =============================================================
 const API = import.meta.env.VITE_BACKEND_URL;
-
 const authHeaders = () => ({
   "Content-Type": "application/json",
   Authorization: `Bearer ${localStorage.getItem("token")}`,
@@ -109,6 +113,12 @@ const PROFILE_CSS = `
 .activity-bar .progress-bar { background: linear-gradient(90deg, #6366f1, #ec4899); }
 .info-line { color: #adb5bd; }
 .info-line svg { color: #6366f1; }
+.sq-coins {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  font-weight: 700; color: #f5d678;
+  background: #1c1708; border: 1px solid #4a3a1f; border-radius: 999px;
+  padding: 0.1rem 0.55rem; font-size: 0.85rem;
+}
 
 /* Edit modal — same skin as EventModal */
 .profile-edit-modal .modal-content {
@@ -191,6 +201,14 @@ export const Profile = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
+
+  // After a Pro/Premium activation, fold the refreshed user into the profile
+  // (so the badge + price unlock without a reload) and persist the session.
+  const handleUpgraded = (u) => {
+    setProfile((p) => ({ ...(p || {}), ...u }));
+    setSession(u);
+    setToast({ text: "You're in! Pro/Premium features unlocked.", variant: "success" });
+  };
 
   // edit modal
   const [editing, setEditing] = useState(false);
@@ -336,6 +354,18 @@ export const Profile = () => {
             {/* HERO */}
             <Card className="profile-card mb-4">
               <Card.Body>
+                {profile.account_type === "business" && (
+                  <div className="d-flex justify-content-end mb-3">
+                    <CompaniesMenu
+                      onChanged={async () => {
+                        try {
+                          const d = await apiGetMyProfile();
+                          setProfile(d);
+                        } catch { /* ignore */ }
+                      }}
+                    />
+                  </div>
+                )}
                 <Row className="align-items-center g-4">
                   <Col xs={12} md="auto" className="text-center">
                     {profile.profile_picture_url ? (
@@ -355,6 +385,27 @@ export const Profile = () => {
                     <h1 className="text-light mb-1">{fullName(profile)}</h1>
                     {profile.username && (
                       <div className="text-secondary mb-2">@{profile.username}</div>
+                    )}
+
+                    {/* Pro / Premium badge + premium coins */}
+                    {(profile.is_pro || profile.is_premium || (profile.premium_coins || 0) > 0) && (
+                      <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
+                        {profile.is_pro && (
+                          <Badge bg="warning" text="dark">
+                            <FiStar style={{ verticalAlign: "-2px" }} /> Pro
+                          </Badge>
+                        )}
+                        {profile.is_premium && (
+                          <Badge bg="warning" text="dark">
+                            <FiStar style={{ verticalAlign: "-2px" }} /> Premium
+                          </Badge>
+                        )}
+                        {(profile.premium_coins || 0) > 0 && (
+                          <span className="sq-coins" title="Premium coins">
+                            <FiStar style={{ verticalAlign: "-2px", color: "#f5b301" }} /> {profile.premium_coins}
+                          </span>
+                        )}
+                      </div>
                     )}
                     {profile.bio && (
                       <p className="text-light mb-3">{profile.bio}</p>
@@ -383,6 +434,9 @@ export const Profile = () => {
                       <Button variant="primary" onClick={openEdit}>
                         <FiEdit2 className="me-1" /> Editar perfil
                       </Button>
+                      {profile.account_type !== "business" && !profile.is_pro && !profile.is_premium && (
+                        <UpgradePro user={profile} onUpgraded={handleUpgraded} />
+                      )}
                       <Link to="/friends">
                         <Button variant="outline-light">
                           <FiUsers className="me-1" /> Mis amigos

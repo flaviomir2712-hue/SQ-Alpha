@@ -26,6 +26,7 @@ import {
   FiXCircle,
   FiGlobe,
   FiLock,
+  FiTag,
 } from "react-icons/fi";
 
 import { EventModal } from "../components/EventModal";
@@ -450,11 +451,20 @@ export const EventsList = () => {
                       {statusPill(e)}
                     </div>
 
-                    <div className="mb-2">
+                    <div className="mb-2 d-flex flex-wrap gap-2 align-items-center">
                       <span className={`vis-chip ${e.is_public ? "public" : "private"}`}>
                         {e.is_public ? <FiGlobe size={12} /> : <FiLock size={12} />}
                         {e.is_public ? "Public" : "Private"}
                       </span>
+                      {e.price != null && (
+                        <span
+                          className="vis-chip"
+                          style={{ background: "#1c1708", borderColor: "#4a3a1f", color: "#f5d678" }}
+                          title="Ticket price"
+                        >
+                          <FiTag size={12} /> € {Number(e.price).toFixed(2)}
+                        </span>
+                      )}
                     </div>
 
                     <div className="event-meta mb-1">

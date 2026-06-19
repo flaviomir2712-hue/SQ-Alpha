@@ -18,6 +18,7 @@ import {
   FiUser,
   FiCalendar,
   FiUsers,
+  FiBriefcase,
   FiActivity,
   FiImage,
   FiX,
@@ -346,6 +347,24 @@ export const BottomNavbar = () => {
   // Tanda 7D — señal de sesión = user persistido (el JWT vive en una
   // cookie httpOnly que JS no puede leer).
   const isLogged = isLoggedIn();
+  // Phase 5b — "Manage" se muestra si el usuario puede gestionar algo
+  // (dueño/influencer o miembro de equipo). Lo resuelve /manage/scope.
+  const [canManage, setCanManage] = useState(false);
+  useEffect(() => {
+    if (!isLogged) { setCanManage(false); return; }
+    let cancelled = false;
+    fetch(`${import.meta.env.VITE_BACKEND_URL}/api/manage/scope`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setCanManage(d.type === "influencer" ||
+          (Array.isArray(d.businesses) && d.businesses.length > 0));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isLogged]);
   // Total de mensajes de chat no leídos — lo mantiene fresco el poll de
   // /chat/rooms del Navbar (cada 15s), ambos montados juntos en Layout.
   const chatUnread = store.chatUnreadTotal || 0;
@@ -587,6 +606,18 @@ export const BottomNavbar = () => {
         >
           <FiUsers size={22} />
         </Link>
+
+        {/* Phase 5a — Gestión: solo business / influencer. */}
+        {canManage && (
+          <Link
+            to="/manage"
+            className={`sq-bottom-nav-item ${isActive("/manage") ? "active" : ""}`}
+            title="Gestión"
+            aria-label="Gestión"
+          >
+            <FiBriefcase size={22} />
+          </Link>
+        )}
       </nav>
 
       {/* =====================================================
