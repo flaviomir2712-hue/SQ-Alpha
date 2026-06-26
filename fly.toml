@@ -8,6 +8,19 @@ primary_region = "cdg"
   FLASK_DEBUG = "0"
   FLASK_APP = "src/app.py"
 
+# Tanda 10 — Fix 500 en login/register: correr las migraciones en cada
+# deploy. El `release: pipenv run upgrade` del Procfile SOLO lo usan
+# Render/Heroku; Fly ignora el Procfile y usa el CMD del Dockerfile, así
+# que las tablas nunca se creaban → 500 en cualquier query.
+#
+# release_command corre en una VM temporal (con los mismos secrets e
+# imagen) ANTES de poner el deploy en producción. CWD = WORKDIR = /app y
+# FLASK_APP=src/app.py, así que `flask db upgrade` encuentra /app/migrations
+# (copiado en el Dockerfile) y aplica el esquema. Si la migración falla,
+# Fly aborta el deploy y la versión vieja sigue viva.
+[deploy]
+  release_command = "flask db upgrade"
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -24,3 +37,6 @@ primary_region = "cdg"
   memory = "512mb"
   cpu_kind = "shared"
   cpus = 1
+
+[deploy]
+  release_command = "flask db upgrade"
