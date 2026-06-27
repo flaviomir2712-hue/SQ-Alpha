@@ -107,7 +107,7 @@ body.modal-open .sq-discover-fab { display: none; }
    ganar especificidad sobre la regla por defecto de MapLibre. */
 .sq-map-wrapper .maplibregl-ctrl-top-right {
   position: fixed;
-  top: 68px;
+  top: calc(68px + env(safe-area-inset-top, 0px));
   right: 12px;
   z-index: 1020;
 }
@@ -119,7 +119,7 @@ body.modal-open .maplibregl-ctrl-top-right { display: none; }
    business. */
 .sq-event-skipper {
   position: fixed;
-  top: 112px; left: 12px;
+  top: calc(68px + env(safe-area-inset-top, 0px)); left: 12px;
   z-index: 1000;
   display: flex; align-items: center; gap: 4px;
   background: rgba(11,13,18,0.92);
@@ -1062,8 +1062,8 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
       <div
         className="sq-map-wrapper"
         style={{
-          height: "calc(100vh - 56px)",
-          marginTop: "56px",
+          height: "calc(100dvh - 56px - env(safe-area-inset-top, 0px))",
+          marginTop: "calc(56px + env(safe-area-inset-top, 0px))",
           width: "100%",
         }}
       >
@@ -1073,24 +1073,8 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           style={{ height: "100%", width: "100%" }}
         />
 
-        {/* Tanda 7X — Discover: botón flotante + panel sobre el mapa */}
-        {!showDiscover && (
-          <button
-            type="button"
-            className="sq-discover-fab"
-            onClick={() => {
-              // One modal on desktop, one page on mobile: touch devices
-              // open the full /discover page; desktop pops the in-map
-              // overlay (the "modal").
-              if (isTouchDevice()) navigate("/discover");
-              else setShowDiscover(true);
-            }}
-            title="Discover real-world events"
-            aria-label="Discover events"
-          >
-            <FiCompass size={16} /> Discover
-          </button>
-        )}
+        {/* #2 — the floating "Discover" pill was removed: Discover now lives
+            in the bottom navbar. The event skipper takes its top-left spot. */}
 
         {/* #2 — Event skipper, just under the Discover pill. Arrows step
             through events on the map; the centre circle toggles the set. */}

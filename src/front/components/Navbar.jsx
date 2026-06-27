@@ -232,7 +232,7 @@ const countActiveFilters = (days, visibility, status) => {
 // STYLES (dark, coherent avec EventModal / Profile)
 // =====================================================
 const NAVBAR_CSS = `
-.sq-navbar { background: #0f111a !important; border-bottom: 1px solid #262a36; }
+.sq-navbar { background: #0f111a !important; border-bottom: 1px solid #262a36; padding-top: env(safe-area-inset-top, 0px) !important; }
 .sq-navbar .navbar-brand { color: #fff; }
 
 .sq-chat-modal .modal-content {
