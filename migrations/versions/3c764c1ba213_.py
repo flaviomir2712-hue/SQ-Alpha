@@ -1,8 +1,8 @@
 """empty message
 
-Revision ID: ba741f11e4ad
+Revision ID: 3c764c1ba213
 Revises: 
-Create Date: 2026-06-17 08:10:57.752229
+Create Date: 2026-06-27 10:13:03.955300
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 'ba741f11e4ad'
+revision = '3c764c1ba213'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -30,6 +30,7 @@ def upgrade():
     sa.Column('bio', sa.Text(), nullable=True),
     sa.Column('profile_picture_url', sa.Text(), nullable=True),
     sa.Column('birthdate', sa.String(length=20), nullable=True),
+    sa.Column('gender', sa.String(length=40), nullable=True),
     sa.Column('phone', sa.String(length=30), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('email_verified', sa.Boolean(), server_default='true', nullable=False),
@@ -53,6 +54,8 @@ def upgrade():
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('hours', sa.JSON(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('proof_url', sa.Text(), nullable=True),
+    sa.Column('verified', sa.Boolean(), server_default='false', nullable=False),
     sa.ForeignKeyConstraint(['owner_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
@@ -93,23 +96,6 @@ def upgrade():
         batch_op.create_index(batch_op.f('ix_notification_user_id'), ['user_id'], unique=False)
         batch_op.create_index('ix_notification_user_read', ['user_id', 'is_read'], unique=False)
 
-    op.create_table('subscription',
-    sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('user_id', sa.Integer(), nullable=False),
-    sa.Column('plan', sa.String(length=20), nullable=False),
-    sa.Column('status', sa.String(length=20), server_default='incomplete', nullable=False),
-    sa.Column('provider', sa.String(length=20), nullable=True),
-    sa.Column('provider_customer_id', sa.String(length=120), nullable=True),
-    sa.Column('provider_subscription_id', sa.String(length=120), nullable=True),
-    sa.Column('current_period_end', sa.DateTime(), nullable=True),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.Column('updated_at', sa.DateTime(), nullable=False),
-    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    with op.batch_alter_table('subscription', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_subscription_user_id'), ['user_id'], unique=True)
-
     op.create_table('business_post',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('business_id', sa.Integer(), nullable=False),
@@ -133,13 +119,18 @@ def upgrade():
     sa.Column('details', sa.Text(), nullable=True),
     sa.Column('image', sa.Text(), nullable=True),
     sa.Column('price', sa.Float(), nullable=True),
+    sa.Column('team_note', sa.Text(), nullable=True),
+    sa.Column('duration_min', sa.Integer(), nullable=True),
     sa.Column('is_public', sa.Boolean(), server_default='false', nullable=False),
     sa.Column('creator_id', sa.Integer(), nullable=False),
     sa.Column('business_id', sa.Integer(), nullable=True),
+    sa.Column('pending_delete_by', sa.Integer(), nullable=True),
+    sa.Column('pending_delete_at', sa.DateTime(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),
     sa.Column('happened', sa.Boolean(), nullable=True),
     sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
     sa.ForeignKeyConstraint(['creator_id'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['pending_delete_by'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('follow',
@@ -177,6 +168,63 @@ def upgrade():
     with op.batch_alter_table('review', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_review_author_id'), ['author_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_review_business_id'), ['business_id'], unique=False)
+
+    op.create_table('subscription',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=True),
+    sa.Column('plan', sa.String(length=20), nullable=False),
+    sa.Column('status', sa.String(length=20), server_default='incomplete', nullable=False),
+    sa.Column('provider', sa.String(length=20), nullable=True),
+    sa.Column('provider_customer_id', sa.String(length=120), nullable=True),
+    sa.Column('provider_subscription_id', sa.String(length=120), nullable=True),
+    sa.Column('current_period_end', sa.DateTime(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('updated_at', sa.DateTime(), nullable=False),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    with op.batch_alter_table('subscription', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_subscription_business_id'), ['business_id'], unique=True)
+        batch_op.create_index(batch_op.f('ix_subscription_user_id'), ['user_id'], unique=False)
+
+    op.create_table('team_invite',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=False),
+    sa.Column('role', sa.String(length=20), server_default='viewer', nullable=False),
+    sa.Column('token', sa.String(length=64), nullable=False),
+    sa.Column('email', sa.String(length=255), nullable=True),
+    sa.Column('invited_username', sa.String(length=80), nullable=True),
+    sa.Column('status', sa.String(length=20), server_default='pending', nullable=False),
+    sa.Column('created_by', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=True),
+    sa.Column('expires_at', sa.DateTime(), nullable=True),
+    sa.Column('accepted_by', sa.Integer(), nullable=True),
+    sa.ForeignKeyConstraint(['accepted_by'], ['user.id'], ),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.ForeignKeyConstraint(['created_by'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('token')
+    )
+    with op.batch_alter_table('team_invite', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_team_invite_business_id'), ['business_id'], unique=False)
+
+    op.create_table('team_membership',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('business_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
+    sa.Column('role', sa.String(length=20), server_default='viewer', nullable=False),
+    sa.Column('can_manage_managers', sa.Boolean(), server_default='false', nullable=False),
+    sa.Column('created_at', sa.DateTime(), nullable=True),
+    sa.ForeignKeyConstraint(['business_id'], ['business.id'], ),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('business_id', 'user_id', name='uq_team_membership_biz_user')
+    )
+    with op.batch_alter_table('team_membership', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_team_membership_business_id'), ['business_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_team_membership_user_id'), ['user_id'], unique=False)
 
     op.create_table('chat_room',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -234,6 +282,13 @@ def upgrade():
     sa.Column('event_id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
     sa.Column('rsvp', sa.String(length=20), nullable=True),
+    sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
+    sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
+    sa.PrimaryKeyConstraint('event_id', 'user_id')
+    )
+    op.create_table('event_workers',
+    sa.Column('event_id', sa.Integer(), nullable=False),
+    sa.Column('user_id', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('event_id', 'user_id')
@@ -309,6 +364,7 @@ def downgrade():
         batch_op.drop_index(batch_op.f('ix_invite_suggestion_event_id'))
 
     op.drop_table('invite_suggestion')
+    op.drop_table('event_workers')
     op.drop_table('event_participants')
     with op.batch_alter_table('event_opinion', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_event_opinion_event_id'))
@@ -326,6 +382,20 @@ def downgrade():
         batch_op.drop_index(batch_op.f('ix_chat_room_event_id'))
 
     op.drop_table('chat_room')
+    with op.batch_alter_table('team_membership', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_team_membership_user_id'))
+        batch_op.drop_index(batch_op.f('ix_team_membership_business_id'))
+
+    op.drop_table('team_membership')
+    with op.batch_alter_table('team_invite', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_team_invite_business_id'))
+
+    op.drop_table('team_invite')
+    with op.batch_alter_table('subscription', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_subscription_user_id'))
+        batch_op.drop_index(batch_op.f('ix_subscription_business_id'))
+
+    op.drop_table('subscription')
     with op.batch_alter_table('review', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_review_business_id'))
         batch_op.drop_index(batch_op.f('ix_review_author_id'))
@@ -342,10 +412,6 @@ def downgrade():
         batch_op.drop_index(batch_op.f('ix_business_post_business_id'))
 
     op.drop_table('business_post')
-    with op.batch_alter_table('subscription', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_subscription_user_id'))
-
-    op.drop_table('subscription')
     with op.batch_alter_table('notification', schema=None) as batch_op:
         batch_op.drop_index('ix_notification_user_read')
         batch_op.drop_index(batch_op.f('ix_notification_user_id'))

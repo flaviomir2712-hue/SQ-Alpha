@@ -17,7 +17,7 @@ import { Container, Spinner, Alert } from "react-bootstrap";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { FiCompass } from "react-icons/fi";
+import { FiCompass, FiChevronLeft, FiChevronRight, FiGlobe, FiUsers, FiBriefcase } from "react-icons/fi";
 
 import useGlobalReducer from "../hooks/useGlobalReducer";
 import { createMarkerAvatarElement } from "./MarkerAvatar";
@@ -113,6 +113,40 @@ body.modal-open .sq-discover-fab { display: none; }
 }
 /* Fuera mientras hay un modal abierto (igual que el FAB y la pill). */
 body.modal-open .maplibregl-ctrl-top-right { display: none; }
+
+/* #2 — Event skipper: sits just under the Discover pill. ‹ mode › lets you
+   step through events on the map; the centre circle toggles all/friends/
+   business. */
+.sq-event-skipper {
+  position: fixed;
+  top: 112px; left: 12px;
+  z-index: 1000;
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(11,13,18,0.92);
+  border: 1px solid #262a36; border-radius: 999px;
+  padding: 4px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.sq-skip-arrow {
+  width: 30px; height: 30px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: #e9ecef; cursor: pointer;
+}
+.sq-skip-arrow:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.sq-skip-arrow:disabled { opacity: 0.35; cursor: default; }
+.sq-skip-mode {
+  min-width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  background: linear-gradient(135deg,#6366f1,#ec4899); border: none;
+  color: #fff; cursor: pointer; font-size: 0.62rem; font-weight: 700;
+  padding: 0 6px;
+}
+.sq-skip-mode:hover { filter: brightness(1.08); }
+.sq-skip-count {
+  font-size: 0.6rem; color: #adb5bd; padding: 0 4px; min-width: 30px; text-align: center;
+}
+body.modal-open .sq-event-skipper { display: none; }
 `;
 
 // Detecta si el dispositivo NO tiene capacidad de hover (móvil/tablet).
@@ -250,6 +284,70 @@ const matchesVisibilityFilter = (event, visibilityFilter) => {
   }
 };
 
+// #4 — is a business open right now, per its weekly hours?
+// hours = { mon: {open:"09:00", close:"18:00"}, ... }. Missing/blank day = closed.
+// Best-effort using the viewer's local time (business timezone unknown).
+const BIZ_DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const isBusinessOpen = (hours) => {
+  if (!hours || typeof hours !== "object") return false;
+  const now = new Date();
+  const day = hours[BIZ_DAY_KEYS[now.getDay()]];
+  if (!day || !day.open || !day.close) return false;
+  const cur = now.getHours() * 60 + now.getMinutes();
+  const toMin = (s) => {
+    const [h, m] = String(s).split(":").map((n) => parseInt(n, 10));
+    return (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m);
+  };
+  const open = toMin(day.open);
+  const close = toMin(day.close);
+  if (close <= open) return cur >= open || cur < close; // overnight (e.g. 20:00–02:00)
+  return cur >= open && cur < close;
+};
+
+// #5/#4 — pin for a followed business. Same 56px footprint as the event
+// avatar (one marker size everywhere); BLACK ring distinguishes businesses
+// from events; an "Open" pill mirrors the event "going" badge.
+const createBusinessMarkerElement = (biz, size = 56) => {
+  const wrap = document.createElement("div");
+  wrap.setAttribute("data-business-id", String(biz.id));
+  // No inline position (MapLibre owns it); overflow visible so the pill escapes.
+  wrap.style.cssText =
+    `width:${size}px;height:${size}px;display:flex;` +
+    `align-items:flex-start;justify-content:center;cursor:pointer;overflow:visible;`;
+
+  const circle = document.createElement("div");
+  circle.style.cssText =
+    `width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;` +
+    `border:3px solid #000;box-shadow:0 2px 8px rgba(0,0,0,0.45);` +
+    `background:linear-gradient(135deg,#6366f1,#ec4899);` +
+    `display:flex;align-items:center;justify-content:center;` +
+    `font-size:1.4rem;box-sizing:border-box;`;
+  if (biz.profile_picture_url) {
+    const img = document.createElement("img");
+    img.src = biz.profile_picture_url;
+    img.alt = biz.name || "";
+    img.style.cssText = "width:100%;height:100%;object-fit:cover;display:block;";
+    img.onerror = () => { img.remove(); circle.textContent = "🏬"; };
+    circle.appendChild(img);
+  } else {
+    circle.textContent = "🏬";
+  }
+  wrap.appendChild(circle);
+
+  const badge = document.createElement("span");
+  badge.style.cssText =
+    `position:absolute;left:50%;top:100%;transform:translate(-50%,-50%);` +
+    `background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;` +
+    `font-size:0.66rem;font-weight:700;padding:2px 8px;border-radius:999px;` +
+    `white-space:nowrap;border:2px solid #0b0d12;box-shadow:0 1px 4px rgba(0,0,0,0.5);` +
+    `pointer-events:none;line-height:1.15;z-index:5;`;
+  badge.textContent = "Open";
+  wrap.appendChild(badge);
+
+  wrap.title = biz.name || "Business";
+  return wrap;
+};
+
 export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const { store } = useGlobalReducer();
   const mapFilterDays = store?.mapFilterDays ?? null;
@@ -283,7 +381,15 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef([]);
+  const businessMarkersRef = useRef([]);
   const userMarkerRef = useRef(null);
+
+  // #5 — businesses the user follows → persistent pins on the map.
+  const [followedBiz, setFollowedBiz] = useState([]);
+  // #2 — event skipper: mode toggle + current index + friend ids.
+  const [skipMode, setSkipMode] = useState("all"); // all | friends | business
+  const [skipIndex, setSkipIndex] = useState(-1);
+  const [friendIds, setFriendIds] = useState(() => new Set());
 
   const [followUser, setFollowUserState] = useState(true);
   const followUserRef = useRef(true);
@@ -599,9 +705,112 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
     });
   }, [visibleEvents]);
 
+  // #5 — fetch the businesses the user follows once, then keep their pins.
+  useEffect(() => {
+    const apiUrl = import.meta.env.VITE_BACKEND_URL;
+    if (!apiUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/businesses/following`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setFollowedBiz(Array.isArray(data) ? data : []);
+      } catch { /* pins are best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // #5 — render followed-business pins (event-sized, black ring).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    businessMarkersRef.current.forEach((m) => m.remove());
+    businessMarkersRef.current = [];
+    followedBiz
+      .filter((b) => b.latitude != null && b.longitude != null && isBusinessOpen(b.hours))
+      .forEach((b) => {
+        const el = createBusinessMarkerElement(b, 56);
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          navigate(`/business/${b.id}`);
+        });
+        const marker = new maplibregl.Marker({ element: el, anchor: "bottom" })
+          .setLngLat([b.longitude, b.latitude])
+          .addTo(map);
+        businessMarkersRef.current.push(marker);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [followedBiz]);
+
   const handleUserInteract = () => {
     if (followUserRef.current) setFollowUser(false);
   };
+
+  // #2 — fetch friend ids once (for the skipper's "friends" mode).
+  useEffect(() => {
+    const apiUrl = import.meta.env.VITE_BACKEND_URL;
+    if (!apiUrl) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/friends`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const ids = (Array.isArray(data) ? data : [])
+          .map((d) => d?.friend?.id)
+          .filter((x) => x != null);
+        if (!cancelled) setFriendIds(new Set(ids));
+      } catch { /* best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // #2 — events the skipper can step through, per the centre-circle mode.
+  const followedBizIds = useMemo(
+    () => new Set(followedBiz.map((b) => b.id)),
+    [followedBiz]
+  );
+  const skipEvents = useMemo(() => {
+    const withCoords = visibleEvents.filter(
+      (e) => e.latitude != null && e.longitude != null
+    );
+    if (skipMode === "friends") return withCoords.filter((e) => friendIds.has(e.creator_id));
+    if (skipMode === "business") return withCoords.filter(
+      (e) => e.business_id != null && followedBizIds.has(e.business_id)
+    );
+    return withCoords;
+  }, [visibleEvents, skipMode, friendIds, followedBizIds]);
+
+  // Reset the cursor whenever the working set changes.
+  useEffect(() => { setSkipIndex(-1); }, [skipMode]);
+
+  const cycleSkipMode = () =>
+    setSkipMode((m) => (m === "all" ? "friends" : m === "friends" ? "business" : "all"));
+
+  const skipTo = (dir) => {
+    if (!mapRef.current || skipEvents.length === 0) return;
+    const n = skipEvents.length;
+    const next = ((skipIndex + dir) % n + n) % n;
+    setSkipIndex(next);
+    const ev = skipEvents[next];
+    if (ev?.latitude != null && ev?.longitude != null) {
+      setFollowUser(false);
+      isProgrammaticMoveRef.current = true;
+      mapRef.current.flyTo({
+        center: [ev.longitude, ev.latitude],
+        zoom: Math.max(mapRef.current.getZoom(), 15),
+        essential: true,
+      });
+    }
+  };
+
+  const SKIP_MODE_META = {
+    all:      { icon: <FiGlobe size={15} />,     label: "All" },
+    friends:  { icon: <FiUsers size={15} />,     label: "Friends" },
+    business: { icon: <FiBriefcase size={15} />, label: "Biz" },
+  };
+
   handleUserInteractRef.current = handleUserInteract;
 
   // ── EFFECT: capturar si había overlay abierto al mousedown ──
@@ -881,6 +1090,40 @@ export const Mapview = ({ onMapClick, onMarkerClick, onSaved }) => {
           >
             <FiCompass size={16} /> Discover
           </button>
+        )}
+
+        {/* #2 — Event skipper, just under the Discover pill. Arrows step
+            through events on the map; the centre circle toggles the set. */}
+        {!showDiscover && (
+          <div className="sq-event-skipper" role="group" aria-label="Skip through events">
+            <button
+              type="button"
+              className="sq-skip-arrow"
+              onClick={() => skipTo(-1)}
+              disabled={skipEvents.length === 0}
+              aria-label="Previous event"
+            >
+              <FiChevronLeft size={18} />
+            </button>
+            <button
+              type="button"
+              className="sq-skip-mode"
+              onClick={cycleSkipMode}
+              title={`Showing: ${SKIP_MODE_META[skipMode].label}${skipEvents.length ? ` (${skipEvents.length})` : ""}`}
+              aria-label={`Event set: ${SKIP_MODE_META[skipMode].label}. Tap to change.`}
+            >
+              {SKIP_MODE_META[skipMode].icon}
+            </button>
+            <button
+              type="button"
+              className="sq-skip-arrow"
+              onClick={() => skipTo(1)}
+              disabled={skipEvents.length === 0}
+              aria-label="Next event"
+            >
+              <FiChevronRight size={18} />
+            </button>
+          </div>
         )}
         <DiscoverPanel
           show={showDiscover}

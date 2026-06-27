@@ -607,6 +607,22 @@ def register():
     homebase = (body.get("homebase") or "").strip() or None
     professional_email = (body.get("professional_email") or "").strip().lower() or None
 
+    # #6 — personal identity fields. Mandatory for a regular person sign-up:
+    #   name (one full name), birthdate (used as age), gender.
+    # Gender is free text so "other" can carry the typed value; the UI
+    # offers male / female / non-binary / other.
+    full_name = (body.get("name") or "").strip() or None
+    birthdate = (body.get("birthdate") or "").strip() or None
+    gender = (body.get("gender") or "").strip() or None
+    if account_type == "person":
+        missing = [k for k, v in
+                   (("name", full_name), ("birthdate", birthdate), ("gender", gender))
+                   if not v]
+        if missing:
+            return jsonify({
+                "msg": "Please fill in: " + ", ".join(missing)
+            }), 400
+
     # Business: the owner's first business is created together with the
     # account. `business` is an object; only `name` is required here, the
     # richer fields (location, hours, picture, posts) are filled in later.
@@ -643,6 +659,10 @@ def register():
         # Tanda 7E — nace sin verificar; se confirma con el link del email.
         email_verified=False,
         account_type=account_type,
+        # #6 — full name stored in first_name; birthdate doubles as age; gender.
+        first_name=full_name,
+        birthdate=birthdate,
+        gender=gender,
         # Only meaningful for influencers; harmless NULLs otherwise.
         homebase=homebase if account_type == "influencer" else None,
         professional_email=professional_email if account_type == "influencer" else None,
@@ -1053,6 +1073,9 @@ def create_event():
     db.session.add(event)
     db.session.flush()
 
+    # #1 — assign business workers (validated against the business team).
+    _set_event_workers(event, body.get("worker_ids"))
+
     # Auto-mark creator as "going"
     db.session.execute(
         text("UPDATE event_participants SET rsvp = 'going' WHERE event_id = :eid AND user_id = :uid"),
@@ -1288,6 +1311,11 @@ def update_event(event_id):
                 "changed_fields":  meta_changed_fields,
             },
         )
+
+    # #1 — allow re-assigning workers on edit (business events only).
+    _json = request.get_json(silent=True) or {}
+    if "worker_ids" in _json:
+        _set_event_workers(event, _json.get("worker_ids"))
 
     db.session.commit()
     _emit_event_ping(event, "updated")
@@ -2430,11 +2458,17 @@ def unfriend(user_id):
 def search_users():
     current_user_id = int(get_jwt_identity())
     q = (request.args.get("q") or "").strip()
-    if len(q) < 2:
-        return jsonify({"msg": "q must be at least 2 characters"}), 400
+    if len(q) < 3:
+        return jsonify({"msg": "q must be at least 3 characters"}), 400
 
+    # Only personal accounts are friendable — business & influencer
+    # accounts have followers, not friends, so they never appear here.
     users = (User.query
-             .filter(User.id != current_user_id, User.username.ilike(f"%{q}%"))
+             .filter(
+                 User.id != current_user_id,
+                 User.username.ilike(f"%{q}%"),
+                 or_(User.account_type == "person", User.account_type.is_(None)),
+             )
              .limit(20)
              .all())
 
@@ -3595,6 +3629,7 @@ def list_followed_businesses():
             "latitude":            b.latitude,
             "longitude":           b.longitude,
             "profile_picture_url": b.profile_picture_url,
+            "hours":               b.hours or {},
         })
     return jsonify(out), 200
 
@@ -3963,6 +3998,27 @@ def _business_role(user_id, business):
         return "owner"
     m = TeamMembership.query.filter_by(business_id=business.id, user_id=user_id).first()
     return m.role if m else None
+
+
+def _set_event_workers(event, worker_ids):
+    """#1 — assign workers to a business event. Only the event business's
+    team members (owner + memberships) are accepted; anything else is
+    silently dropped. A non-business event gets no workers."""
+    if not event.business_id:
+        event.workers = []
+        return
+    ids = set(worker_ids or [])
+    if not ids:
+        event.workers = []
+        return
+    biz = db.session.get(Business, event.business_id)
+    if not biz:
+        event.workers = []
+        return
+    valid_ids = {biz.owner_id}
+    for m in TeamMembership.query.filter_by(business_id=biz.id).all():
+        valid_ids.add(m.user_id)
+    event.workers = [u for u in (db.session.get(User, uid) for uid in ids if uid in valid_ids) if u]
 
 
 def _can_edit_event(user, event):

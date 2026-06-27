@@ -19,12 +19,14 @@ import {
   FiGrid,
   FiUsers,
   FiExternalLink,
+  FiEdit2,
   FiPlus,
 } from "react-icons/fi";
 
 import { EventModal } from "../components/EventModal";
 import { CompanyEventCard } from "../components/CompanyEventCard";
 import { TeamManager } from "../components/TeamManager";
+import { BusinessProfile } from "../components/BusinessProfile";
 
 // =============================================================
 // CompanyHub — Phase 5a/5b, route /manage
@@ -90,6 +92,7 @@ export const CompanyHub = () => {
   const [modalOpen, setModalOpen]         = useState(false);
   const [activeEventId, setActiveEventId] = useState(null);
   const [showTeam, setShowTeam]           = useState(false);
+  const [editSignal, setEditSignal]       = useState(0);
 
   // ── load scope (what can I manage?) ──
   useEffect(() => {
@@ -203,9 +206,7 @@ export const CompanyHub = () => {
                     {b.name}
                     <span className="sq-biz-badges">
                       {b.is_pro && <Badge bg="primary"><FiStar /> Pro</Badge>}
-                      {b.verified
-                        ? <Badge bg="success"><FiCheckCircle /> Verified</Badge>
-                        : <Badge bg="secondary"><FiClock /> Pending</Badge>}
+                      {b.verified && <Badge bg="success"><FiCheckCircle /> Verified</Badge>}
                     </span>
                   </Dropdown.Item>
                 ))}
@@ -216,8 +217,8 @@ export const CompanyHub = () => {
                 <Button className="sq-biz-toggle" onClick={() => setShowTeam(true)}>
                   <FiUsers /> Team
                 </Button>
-                <Button className="sq-biz-toggle" onClick={() => navigate(`/business/${selectedBizId}`)}>
-                  <FiExternalLink /> View public page
+                <Button className="sq-biz-toggle" onClick={() => setEditSignal((n) => n + 1)}>
+                  <FiEdit2 /> Edit
                 </Button>
                 <Button variant="primary" onClick={openCreate}>
                   <FiPlus className="me-1" /> New event
@@ -244,6 +245,10 @@ export const CompanyHub = () => {
             <h5 className="text-light">No companies yet</h5>
             <div className="small">Add a company from your profile to start managing it here.</div>
           </div>
+        ) : scopeType === "business" && selectedBizId ? (
+          /* #8a — the Manage page shows the live public-page view for the
+             selected company (card, hours, events, reviews, posts). */
+          <BusinessProfile businessId={selectedBizId} embedded editSignal={editSignal} />
         ) : loadingEvents ? (
           <div className="text-center py-5 text-secondary"><Spinner animation="border" /></div>
         ) : events.length === 0 ? (

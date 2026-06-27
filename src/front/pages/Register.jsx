@@ -8,7 +8,7 @@ import {
 	Alert,
 	Spinner,
 } from "react-bootstrap";
-import { FiMail, FiLock, FiUserPlus, FiAtSign, FiCheckCircle, FiStar, FiBriefcase, FiUser, FiMapPin } from "react-icons/fi";
+import { FiMail, FiLock, FiUserPlus, FiAtSign, FiCheckCircle, FiStar, FiBriefcase, FiUser, FiMapPin, FiCalendar, FiUsers } from "react-icons/fi";
 import logoSideQuest from "../assets/img/logoSideQuest.png";
 import { ResetPasswordModal } from "../components/ResetPasswordModal";
 
@@ -139,6 +139,11 @@ export const Register = () => {
 	const [businessName, setBusinessName] = useState("");
 	const [homebase, setHomebase] = useState("");
 	const [professionalEmail, setProfessionalEmail] = useState("");
+	// #6 — mandatory person identity fields.
+	const [fullName, setFullName] = useState("");
+	const [birthdate, setBirthdate] = useState("");
+	const [gender, setGender] = useState("");          // male|female|non-binary|other
+	const [genderOther, setGenderOther] = useState(""); // free text when gender==="other"
 
 	const handleAcceptTermsChange = (checked) => {
 		setAcceptedTerms(checked);
@@ -170,6 +175,17 @@ export const Register = () => {
 			return;
 		}
 
+		// #6 — name, birthdate and gender are mandatory for a person sign-up.
+		const resolvedGender = gender === "other" ? genderOther.trim() : gender;
+		if (accountType === "person") {
+			if (!fullName.trim()) { setError("Please enter your name."); return; }
+			if (!birthdate) { setError("Please enter your date of birth."); return; }
+			if (!gender) { setError("Please select your gender."); return; }
+			if (gender === "other" && !genderOther.trim()) {
+				setError("Please specify your gender."); return;
+			}
+		}
+
 		setLoading(true);
 
 		try {
@@ -177,6 +193,11 @@ export const Register = () => {
 			// business / influencer add their extras (the backend ignores the
 			// ones that don't apply to the chosen account_type).
 			const payload = { email, username, password, account_type: accountType };
+			if (accountType === "person") {
+				payload.name = fullName.trim();
+				payload.birthdate = birthdate;
+				payload.gender = resolvedGender;
+			}
 			if (accountType === "business") {
 				payload.business = { name: businessName.trim() };
 			}
@@ -359,6 +380,70 @@ export const Register = () => {
 										required
 									/>
 								</Form.Group>
+							)}
+
+							{accountType === "person" && (
+								<>
+									<Form.Group className="mb-3">
+										<Form.Label>
+											<FiUser className="me-2" /> Full name
+										</Form.Label>
+										<Form.Control
+											type="text"
+											value={fullName}
+											onChange={(e) => setFullName(e.target.value)}
+											placeholder="Alex Chen"
+											required
+										/>
+									</Form.Group>
+
+									<Form.Group className="mb-3">
+										<Form.Label>
+											<FiCalendar className="me-2" /> Date of birth
+										</Form.Label>
+										<Form.Control
+											type="date"
+											value={birthdate}
+											onChange={(e) => setBirthdate(e.target.value)}
+											max={new Date().toISOString().slice(0, 10)}
+											required
+										/>
+									</Form.Group>
+
+									<Form.Group className="mb-4">
+										<Form.Label>
+											<FiUsers className="me-2" /> Gender
+										</Form.Label>
+										<div className="d-flex flex-wrap gap-3 mb-2">
+											{[
+												["male", "Male"],
+												["female", "Female"],
+												["non-binary", "Non-binary"],
+												["other", "Other"],
+											].map(([val, label]) => (
+												<Form.Check
+													key={val}
+													type="radio"
+													name="gender"
+													id={`gender-${val}`}
+													label={label}
+													value={val}
+													checked={gender === val}
+													onChange={(e) => setGender(e.target.value)}
+												/>
+											))}
+										</div>
+										{gender === "other" && (
+											<Form.Control
+												type="text"
+												value={genderOther}
+												onChange={(e) => setGenderOther(e.target.value)}
+												placeholder="Please specify"
+												required
+											/>
+										)}
+									</Form.Group>
+								</>
 							)}
 
 							{accountType === "influencer" && (

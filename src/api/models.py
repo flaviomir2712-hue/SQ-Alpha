@@ -25,6 +25,15 @@ event_participants = Table(
     Column("rsvp",     String(20), nullable=True, default=None),
 )
 
+# #1 — workers assigned to a business event (distinct from participants).
+# Only the event's business team members are valid here.
+event_workers = Table(
+    "event_workers",
+    db.metadata,
+    Column("event_id", ForeignKey("event.id"), primary_key=True),
+    Column("user_id",  ForeignKey("user.id"),  primary_key=True),
+)
+
 
 # ── USER ─────────────────────────────────────────────────
 class User(db.Model):
@@ -42,6 +51,8 @@ class User(db.Model):
     bio:                 Mapped[str] = mapped_column(Text,        nullable=True)
     profile_picture_url: Mapped[str] = mapped_column(Text, nullable=True)
     birthdate:           Mapped[str] = mapped_column(String(20),  nullable=True)
+    # #6 — male | female | non-binary | <free text for "other">.
+    gender:              Mapped[str] = mapped_column(String(40),  nullable=True)
     phone:               Mapped[str] = mapped_column(String(30),  nullable=True)
     created_at:          Mapped[datetime] = mapped_column(DateTime, nullable=True, default=datetime.utcnow)
     # Tanda 7E — confirmación de email por link firmado (GET
@@ -142,6 +153,7 @@ class User(db.Model):
             "bio":                 self.bio,
             "profile_picture_url": self.profile_picture_url,
             "birthdate":           self.birthdate,
+            "gender":              self.gender,
             "phone":               self.phone,
             "email_verified":      bool(self.email_verified),
             "account_type":        self.account_type or "person",
@@ -222,6 +234,9 @@ class Event(db.Model):
     participants: Mapped[list["User"]] = relationship(
         "User", secondary=event_participants, lazy="selectin"
     )
+    workers:      Mapped[list["User"]] = relationship(
+        "User", secondary=event_workers, lazy="selectin"
+    )
     invitations:  Mapped[list["EventInvitation"]] = relationship(
         "EventInvitation",
         foreign_keys="EventInvitation.event_id",
@@ -297,6 +312,14 @@ class Event(db.Model):
             "business_name":      self.business.name if self.business else None,
             "participants":       participants_data,
             "participants_count": len(self.participants),
+            "workers": [
+                {
+                    "id":                  w.id,
+                    "username":            w.username,
+                    "profile_picture_url": w.profile_picture_url,
+                }
+                for w in (self.workers or [])
+            ],
             "going_count":        going_count,
             "pending_invitations": [
                 {

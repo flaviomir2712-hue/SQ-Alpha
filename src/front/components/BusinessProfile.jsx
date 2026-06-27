@@ -48,6 +48,9 @@ const CSS = `
 	padding-top: 80px;
 	padding-bottom: 110px;
 }
+/* Embedded inside the Manage page (CompanyHub) — no page chrome/padding. */
+.biz-embedded { color: #e9ecef; }
+.biz-embedded > .container, .biz-embedded > .container-fluid { padding-left: 0; padding-right: 0; }
 .biz-card {
 	background: #161922;
 	border: 1px solid #262a36;
@@ -181,8 +184,9 @@ const geocodeLocation = async (query) => {
 // =============================================================
 // MAIN
 // =============================================================
-export const BusinessProfile = () => {
-	const { id } = useParams();
+export const BusinessProfile = ({ businessId = null, embedded = false, editSignal = 0 } = {}) => {
+	const { id: routeId } = useParams();
+	const id = businessId || routeId;
 	const navigate = useNavigate();
 	const me = getStoredUser();
 
@@ -261,6 +265,13 @@ export const BusinessProfile = () => {
 		setEditing(true);
 	};
 	const setField = (e) => setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+
+	// #3 — CompanyHub's "Edit" toolbar button triggers the same edit modal
+	// via an incrementing signal (the embedded view hides its own header).
+	useEffect(() => {
+		if (editSignal > 0 && biz) openEdit();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [editSignal]);
 
 	// location autocomplete: typing searches Nominatim; picking sets coords
 	const onLocationChange = (e) => {
@@ -399,7 +410,7 @@ export const BusinessProfile = () => {
 	// =====================================================
 	if (loading) {
 		return (
-			<div className="biz-page">
+			<div className={embedded ? "biz-embedded" : "biz-page"}>
 				<style>{CSS}</style>
 				<Container className="text-center py-5"><Spinner animation="border" /></Container>
 			</div>
@@ -407,13 +418,15 @@ export const BusinessProfile = () => {
 	}
 	if (error || !biz) {
 		return (
-			<div className="biz-page">
+			<div className={embedded ? "biz-embedded" : "biz-page"}>
 				<style>{CSS}</style>
 				<Container className="py-5">
 					<Alert variant="danger">{error || "Business not found"}</Alert>
-					<Button variant="outline-light" size="sm" onClick={() => navigate(-1)}>
-						<FiArrowLeft className="me-1" /> Back
-					</Button>
+					{!embedded && (
+						<Button variant="outline-light" size="sm" onClick={() => navigate(-1)}>
+							<FiArrowLeft className="me-1" /> Back
+						</Button>
+					)}
 				</Container>
 			</div>
 		);
@@ -423,9 +436,10 @@ export const BusinessProfile = () => {
 	const hasHours = biz.hours && Object.keys(biz.hours).length > 0;
 
 	return (
-		<div className="biz-page">
+		<div className={embedded ? "biz-embedded" : "biz-page"}>
 			<style>{CSS}</style>
 			<Container>
+				{!embedded && (
 				<div className="mb-3 d-flex justify-content-between align-items-center gap-2 flex-wrap">
 					<Button variant="outline-light" size="sm" onClick={() => navigate(-1)}>
 						<FiArrowLeft className="me-1" /> Back
@@ -461,6 +475,7 @@ export const BusinessProfile = () => {
 						</div>
 					)}
 				</div>
+				)}
 
 				{toast && <Alert variant={toast.variant} className="py-2">{toast.text}</Alert>}
 

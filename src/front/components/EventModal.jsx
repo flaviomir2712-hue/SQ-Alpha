@@ -611,6 +611,9 @@ export const EventModal = ({
   });
 
   const [eventData, setEventData] = useState(null);
+  // #1 — workers assigned to a business event + that business's team list.
+  const [workerIds, setWorkerIds] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving]   = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -620,6 +623,28 @@ export const EventModal = ({
   // --- friends + invitations ---
   const [friends, setFriends] = useState([]);
   const [invitedIds, setInvitedIds] = useState([]);
+
+  // #1 — when the event belongs to a business, load that business's team so
+  // the creator can assign workers; seed the selection from the event.
+  useEffect(() => {
+    const bid = businessId || eventData?.business_id;
+    if (!show || !bid) { setTeamMembers([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetch(`${API}/api/businesses/${bid}/team`, { headers: authHeaders() }).then(handle);
+        if (!cancelled) setTeamMembers(data.members || []);
+      } catch { if (!cancelled) setTeamMembers([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [show, businessId, eventData?.business_id]);
+
+  useEffect(() => {
+    setWorkerIds((eventData?.workers || []).map((w) => w.id));
+  }, [eventData]);
+
+  const toggleWorker = (uid) =>
+    setWorkerIds((ids) => ids.includes(uid) ? ids.filter((x) => x !== uid) : [...ids, uid]);
 
   // --- chat ---
   const [messages, setMessages] = useState([]);
@@ -1054,7 +1079,7 @@ export const EventModal = ({
           duration_min: form.duration_min === "" ? null : Number(form.duration_min),
           invitedFriends: invitedIds,
           // Tie the event to a company when created from its hub.
-          ...(businessId ? { business_id: businessId } : {}),
+          ...(businessId ? { business_id: businessId, worker_ids: workerIds } : {}),
           // Pro-only: only send price when the creator can actually set one,
           // so non-pro accounts never hit the backend's 403.
           ...(isPro ? { price: form.price === "" ? null : Number(form.price) } : {}),
@@ -1081,6 +1106,7 @@ export const EventModal = ({
           longitude: form.longitude,
           duration_min: form.duration_min === "" ? null : Number(form.duration_min),
           ...(isPro ? { price: form.price === "" ? null : Number(form.price) } : {}),
+          ...((businessId || eventData?.business_id) ? { worker_ids: workerIds } : {}),
         });
         setEventData(data.event);
         onSaved(data.event);
@@ -2091,6 +2117,72 @@ export const EventModal = ({
                 </>
               )}
             </Tab>
+
+            {/* ─────────── WORKERS (business events only) ─────────── */}
+            {(businessId || eventData?.business_id) && (
+              <Tab
+                eventKey="workers"
+                title={
+                  <span>
+                    <FiBriefcase className="me-1" /> Workers{" "}
+                    <Badge bg="secondary">{workerIds.length}</Badge>
+                  </span>
+                }
+              >
+                <div className="py-2">
+                  <p className="text-secondary small mb-3">
+                    Assign team members to work this event.
+                  </p>
+                  {teamMembers.length === 0 ? (
+                    <div className="text-secondary small fst-italic">
+                      No team members yet — add workers from the business Team panel.
+                    </div>
+                  ) : (
+                    <ListGroup variant="flush">
+                      {teamMembers.map((m) => (
+                        <ListGroup.Item
+                          key={m.user_id}
+                          className="d-flex align-items-center justify-content-between"
+                          style={{ background: "transparent", border: "none", borderBottom: "1px solid #262a36", padding: "0.55rem 0" }}
+                        >
+                          <div className="d-flex align-items-center gap-2">
+                            {m.profile_picture_url ? (
+                              <img
+                                src={m.profile_picture_url}
+                                alt={m.username}
+                                style={{ width: 34, height: 34, borderRadius: "50%", objectFit: "cover" }}
+                              />
+                            ) : (
+                              <div
+                                style={{
+                                  width: 34, height: 34, borderRadius: "50%",
+                                  background: "linear-gradient(135deg,#6366f1,#ec4899)",
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  color: "#fff", fontWeight: 700,
+                                }}
+                              >
+                                {(m.username || "?").charAt(0).toUpperCase()}
+                              </div>
+                            )}
+                            <div>
+                              <div className="text-light">@{m.username}</div>
+                              <div className="text-secondary" style={{ fontSize: "0.72rem", textTransform: "capitalize" }}>
+                                {m.role}
+                              </div>
+                            </div>
+                          </div>
+                          <Form.Check
+                            type="checkbox"
+                            checked={workerIds.includes(m.user_id)}
+                            onChange={() => toggleWorker(m.user_id)}
+                          />
+                        </ListGroup.Item>
+                      ))}
+                    </ListGroup>
+                  )}
+                </div>
+              </Tab>
+            )}
 
             {/* ─────────── SUGGESTIONS (creator only) ─────────── */}
             {isEditMode && isCreator && (

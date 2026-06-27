@@ -15,6 +15,7 @@ import {
   FiHome,
   FiPlus,
   FiMessageSquare,
+  FiCompass,
   FiUser,
   FiCalendar,
   FiUsers,
@@ -347,6 +348,13 @@ export const BottomNavbar = () => {
   // Tanda 7D — señal de sesión = user persistido (el JWT vive en una
   // cookie httpOnly que JS no puede leer).
   const isLogged = isLoggedIn();
+  // Business & influencer accounts get a "My business" pill instead of
+  // Friends (they have followers, not friends). Read from the cached user.
+  const cachedUser = (() => {
+    try { return JSON.parse(localStorage.getItem("user") || "null"); } catch { return null; }
+  })();
+  const isBizOrInfluencer =
+    cachedUser?.account_type === "business" || cachedUser?.account_type === "influencer";
   // Phase 5b — "Manage" se muestra si el usuario puede gestionar algo
   // (dueño/influencer o miembro de equipo). Lo resuelve /manage/scope.
   const [canManage, setCanManage] = useState(false);
@@ -561,20 +569,12 @@ export const BottomNavbar = () => {
         </Link>
 
         <Link
-          to="/messages"
-          className={`sq-bottom-nav-item ${isActive("/messages") ? "active" : ""}`}
-          title="Chatroom"
-          aria-label={`Chatroom${chatUnread > 0 ? ` (${chatUnread} unread)` : ""}`}
+          to="/discover"
+          className={`sq-bottom-nav-item ${isActive("/discover") ? "active" : ""}`}
+          title="Discover"
+          aria-label="Discover events and creators"
         >
-          <FiMessageSquare size={22} />
-          {/* Contador rojo de mensajes no leídos — espejo del badge del
-              botón de mail del Navbar, alimentado por el mismo
-              store.chatUnreadTotal. */}
-          {chatUnread > 0 && (
-            <span className="sq-bottom-nav-badge" aria-hidden="true">
-              {chatUnread > 99 ? "99+" : chatUnread}
-            </span>
-          )}
+          <FiCompass size={22} />
         </Link>
 
         <button
@@ -596,28 +596,41 @@ export const BottomNavbar = () => {
           <FiCalendar size={22} />
         </Link>
 
-        {/* Tanda 7A — Friends ocupa el sitio del antiguo botón de perfil.
-            El punto rojo de notificaciones que vivía aquí desaparece: la
-            campana del Navbar (NotificationBell) ya muestra ese contador. */}
-        <Link
-          to="/friends"
-          className={`sq-bottom-nav-item ${isActive("/friends") ? "active" : ""}`}
-          title="Friends"
-          aria-label="Friends"
-        >
-          <FiUsers size={22} />
-        </Link>
-
-        {/* Phase 5a — Gestión: solo business / influencer. */}
-        {canManage && (
+        {/* #4 — Business & influencer accounts have no friend list: their
+            last pill is "My business" (→ /manage). Everyone else keeps
+            Friends, plus a Manage pill if they manage something (team). */}
+        {isBizOrInfluencer ? (
           <Link
             to="/manage"
             className={`sq-bottom-nav-item ${isActive("/manage") ? "active" : ""}`}
-            title="Gestión"
-            aria-label="Gestión"
+            title="My business"
+            aria-label="My business"
           >
             <FiBriefcase size={22} />
           </Link>
+        ) : (
+          <>
+            <Link
+              to="/friends"
+              className={`sq-bottom-nav-item ${isActive("/friends") ? "active" : ""}`}
+              title="Friends"
+              aria-label="Friends"
+            >
+              <FiUsers size={22} />
+            </Link>
+
+            {/* Phase 5a — Gestión pill for people who manage a business (team). */}
+            {canManage && (
+              <Link
+                to="/manage"
+                className={`sq-bottom-nav-item ${isActive("/manage") ? "active" : ""}`}
+                title="My business"
+                aria-label="My business"
+              >
+                <FiBriefcase size={22} />
+              </Link>
+            )}
+          </>
         )}
       </nav>
 
