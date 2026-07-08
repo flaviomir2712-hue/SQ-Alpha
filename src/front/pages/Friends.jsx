@@ -38,68 +38,37 @@ import { announceTourAction, TOUR_ACTIONS } from "../services/tour";
 // =============================================================
 // API HELPERS (inlined — no external service file needed)
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
+import { api } from "../services/api";
 
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
 
 const apiFetchFriends = () =>
-  fetch(`${API}/api/friends`, { headers: authHeaders() }).then(handle);
+  api.get(`/friends`);
 
 const apiFetchRequests = (direction = "incoming") =>
-  fetch(`${API}/api/friends/requests?direction=${direction}`, {
-    headers: authHeaders(),
-  }).then(handle);
+  api.get(`/friends/requests?direction=${direction}`);
 
 const apiSendRequest = (payload) =>
-  fetch(`${API}/api/friends/requests`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
-  }).then(handle);
+  api.post(`/friends/requests`, payload);
 
 const apiAcceptRequest = (requestId) =>
-  fetch(`${API}/api/friends/requests/${requestId}/accept`, {
-    method: "PUT",
-    headers: authHeaders(),
-  }).then(handle);
+  api.put(`/friends/requests/${requestId}/accept`);
 
 const apiRefuseRequest = (requestId) =>
-  fetch(`${API}/api/friends/requests/${requestId}/refuse`, {
-    method: "PUT",
-    headers: authHeaders(),
-  }).then(handle);
+  api.put(`/friends/requests/${requestId}/refuse`);
 
 const apiCancelRequest = (requestId) =>
-  fetch(`${API}/api/friends/requests/${requestId}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  }).then(handle);
+  api.del(`/friends/requests/${requestId}`);
 
 const apiUnfriend = (userId) =>
-  fetch(`${API}/api/friends/${userId}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  }).then(handle);
+  api.del(`/friends/${userId}`);
 
 const apiSearchUsers = (q) =>
-  fetch(`${API}/api/friends/search?q=${encodeURIComponent(q)}`, {
-    headers: authHeaders(),
-  }).then(handle);
+  api.get(`/friends/search?q=${encodeURIComponent(q)}`);
 
 // "Closest people" suggestions + the current friend count / cap.
 const apiSuggestions = () =>
-  fetch(`${API}/api/friends/suggestions`, {
-    headers: authHeaders(),
-  }).then(handle);
+  api.get(`/friends/suggestions`);
 
 // =============================================================
 // INLINE STYLES (no external CSS file needed)

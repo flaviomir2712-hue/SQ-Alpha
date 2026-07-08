@@ -49,7 +49,7 @@ const getPreviewText = (last) => {
   if (!last) return null;
   if (last.deleted) return "Message deleted";
   if (last.text) return last.text;
-  if (last.media_type === "image") return "📷 Foto";
+  if (last.media_type === "image") return "📷 Photo";
   if (last.media_type === "audio") return "🎤 Audio";
   return null;
 };
@@ -375,7 +375,7 @@ const Messages = () => {
         >
           <div className="sq-msg-list-header">
             <h5 className="m-0 d-flex align-items-center gap-2">
-              <FiMessageSquare /> Tus Chats
+              <FiMessageSquare /> Your Chats
             </h5>
           </div>
 
@@ -557,7 +557,7 @@ const Messages = () => {
                       className="sq-msg-input"
                       placeholder={
                         isRecording
-                          ? "Grabando audio…"
+                          ? "Recording audio…"
                           : editingId
                             ? "Editing a message above…"
                             : "Write a message…"
@@ -664,7 +664,7 @@ const RoomItem = ({ room, currentUserId, active, onClick }) => {
         <div className="sq-msg-room-row">
           {preview ? (
             <div className="sq-msg-room-preview">
-              {last.sender_id === currentUserId ? "Tú: " : ""}{preview}
+              {last.sender_id === currentUserId ? "You: " : ""}{preview}
             </div>
           ) : (
             <div className="sq-msg-room-preview muted">No messages</div>
@@ -696,7 +696,7 @@ const FriendItem = ({ friend, onOpen, onStartDm }) => {
         <div className="sq-msg-room-row">
           <div className="sq-msg-room-title">
             {label}
-            <span className="sq-msg-room-type">{room ? "Abrir DM" : "Nuevo DM"}</span>
+            <span className="sq-msg-room-type">{room ? "Open DM" : "New DM"}</span>
           </div>
         </div>
         <div className="sq-msg-room-preview muted">
@@ -749,7 +749,7 @@ const MessageBubble = ({
       ) : (
         <div className={`sq-msg-bubble ${m._optimistic ? "pending" : ""} ${m._failed ? "failed" : ""}`}>
           {m.media_type === "image" && m.media_url && (
-            <img src={m.media_url} alt="foto" className="sq-msg-img" />
+            <img src={m.media_url} alt="photo" className="sq-msg-img" />
           )}
           {m.media_type === "audio" && m.media_url && (
             <audio controls src={m.media_url} className="sq-msg-audio" />
@@ -758,9 +758,9 @@ const MessageBubble = ({
 
           <div className="sq-msg-meta">
             {formatFullTime(m.created_at)}
-            {m.edited_at && <span className="sq-msg-edited"> · editado</span>}
-            {m._optimistic && <span> · enviando…</span>}
-            {m._failed && <span> · ❌ falló</span>}
+            {m.edited_at && <span className="sq-msg-edited"> · edited</span>}
+            {m._optimistic && <span> · sending…</span>}
+            {m._failed && <span> · ❌ failed</span>}
           </div>
 
           {(canEdit || canDelete) && (
@@ -770,7 +770,7 @@ const MessageBubble = ({
                   size="sm"
                   className="sq-msg-action-btn"
                   onClick={() => onBeginEdit(m)}
-                  title="Editar (15 min)"
+                  title="Edit (15 min)"
                 >
                   <FiEdit2 />
                 </Button>

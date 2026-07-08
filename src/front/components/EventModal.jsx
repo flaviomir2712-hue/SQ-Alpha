@@ -54,93 +54,63 @@ import { announceTourAction, TOUR_ACTIONS } from "../services/tour";
 // =============================================================
 // INLINE API
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
+import { api } from "../services/api";
 
 // Same window the backend enforces (15 min). Keeping it identical
 // avoids showing an Edit button that would 409 server-side.
 const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
 
-const apiGetEvent       = async (id) => await fetch(`${API}/api/events/${id}`, { headers: authHeaders() }).then(handle);
-const apiCreateEvent    = (body) => fetch(`${API}/api/events`,        { method: "POST",   headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
-const apiUpdateEvent    = (id, body) => fetch(`${API}/api/events/${id}`,  { method: "PUT",  headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
-const apiDeleteEvent    = (id) => fetch(`${API}/api/events/${id}`,  { method: "DELETE", headers: authHeaders() }).then(handle);
+const apiGetEvent       = async (id) => await api.get(`/events/${id}`);
+const apiCreateEvent    = (body) => api.post(`/events`, body);
+const apiUpdateEvent    = (id, body) => api.put(`/events/${id}`, body);
+const apiDeleteEvent    = (id) => api.del(`/events/${id}`);
 // Phase 5b — role gating + deletion approval.
-const apiManageScope     = () => fetch(`${API}/api/manage/scope`, { headers: authHeaders() }).then(handle);
-const apiApproveDeletion = (id) => fetch(`${API}/api/events/${id}/deletion/approve`, { method: "POST", headers: authHeaders() }).then(handle);
-const apiCancelDeletion  = (id) => fetch(`${API}/api/events/${id}/deletion/cancel`,  { method: "POST", headers: authHeaders() }).then(handle);
+const apiManageScope     = () => api.get(`/manage/scope`);
+const apiApproveDeletion = (id) => api.post(`/events/${id}/deletion/approve`);
+const apiCancelDeletion  = (id) => api.post(`/events/${id}/deletion/cancel`);
 
 // Multi-invite (back-compat: array of user ids in one call)
 const apiInviteBatch    = (id, userIds) =>
-  fetch(`${API}/api/events/${id}/invite`, {
-    method: "POST", headers: authHeaders(),
-    body: JSON.stringify({ user_ids: userIds }),
-  }).then(handle);
+  api.post(`/events/${id}/invite`, { user_ids: userIds });
 
-const apiRemoveMember   = (id, userId) => fetch(`${API}/api/events/${id}/participants/${userId}`, { method: "DELETE", headers: authHeaders() }).then(handle);
+const apiRemoveMember   = (id, userId) => api.del(`/events/${id}/participants/${userId}`);
 
 // Unified response (going / maybe / not_going) — works for both invitees
 // (joins them or declines) and participants (just updates rsvp).
 const apiRespond        = (id, response) =>
-  fetch(`${API}/api/events/${id}/respond`, {
-    method: "PUT", headers: authHeaders(),
-    body: JSON.stringify({ response }),
-  }).then(handle);
+  api.put(`/events/${id}/respond`, { response });
 
 // Leave event (non-creator participants)
 const apiLeaveEvent     = (id) =>
-  fetch(`${API}/api/events/${id}/leave`, {
-    method: "DELETE", headers: authHeaders(),
-  }).then(handle);
+  api.del(`/events/${id}/leave`);
 
 // Invite suggestions (a participant proposes; the creator approves)
 const apiSuggestInvite      = (id, userIds) =>
-  fetch(`${API}/api/events/${id}/suggest-invite`, {
-    method: "POST", headers: authHeaders(),
-    body: JSON.stringify({ user_ids: userIds }),
-  }).then(handle);
+  api.post(`/events/${id}/suggest-invite`, { user_ids: userIds });
 const apiListSuggestions    = (id) =>
-  fetch(`${API}/api/events/${id}/suggestions`, { headers: authHeaders() }).then(handle);
+  api.get(`/events/${id}/suggestions`);
 const apiApproveSuggestion  = (id, sid) =>
-  fetch(`${API}/api/events/${id}/suggestions/${sid}/approve`, {
-    method: "PUT", headers: authHeaders(),
-  }).then(handle);
+  api.put(`/events/${id}/suggestions/${sid}/approve`);
 const apiRefuseSuggestion   = (id, sid) =>
-  fetch(`${API}/api/events/${id}/suggestions/${sid}/refuse`, {
-    method: "PUT", headers: authHeaders(),
-  }).then(handle);
+  api.put(`/events/${id}/suggestions/${sid}/refuse`);
 const apiApproveAllSuggestions = (id) =>
-  fetch(`${API}/api/events/${id}/suggestions/approve-all`, {
-    method: "PUT", headers: authHeaders(),
-  }).then(handle);
+  api.put(`/events/${id}/suggestions/approve-all`);
 const apiRefuseAllSuggestions  = (id) =>
-  fetch(`${API}/api/events/${id}/suggestions/refuse-all`, {
-    method: "PUT", headers: authHeaders(),
-  }).then(handle);
+  api.put(`/events/${id}/suggestions/refuse-all`);
 
 // Chat — legacy event-scoped endpoints (text + media supported server-side)
-const apiGetMessages    = (id) => fetch(`${API}/api/events/${id}/chat/messages`, { headers: authHeaders() }).then(handle);
-const apiPostMessage    = (id, body) => fetch(`${API}/api/events/${id}/chat/messages`, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
+const apiGetMessages    = (roomId) => api.get(`/chat/rooms/${roomId}/messages`);
+const apiPostMessage    = (roomId, body) => api.post(`/chat/rooms/${roomId}/messages`, body);
 
 // Chat — room-scoped endpoints (needed for edit + mark-read)
 const apiEditMessage    = (roomId, msgId, text) =>
-  fetch(`${API}/api/chat/rooms/${roomId}/messages/${msgId}`, {
-    method: "PUT", headers: authHeaders(), body: JSON.stringify({ text }),
-  }).then(handle);
+  api.put(`/chat/rooms/${roomId}/messages/${msgId}`, { text });
 const apiMarkRoomRead   = (roomId) =>
-  fetch(`${API}/api/chat/rooms/${roomId}/read`, { method: "PUT", headers: authHeaders() }).then(handle);
+  api.put(`/chat/rooms/${roomId}/read`);
 
-const apiListFriends    = () => fetch(`${API}/api/friends`, { headers: authHeaders() }).then(handle);
+const apiListFriends    = () => api.get(`/friends`);
 
 // =============================================================
 // HELPERS
@@ -807,8 +777,10 @@ export const EventModal = ({
         latitude:  data.latitude,
         longitude: data.longitude,
       });
-      const m = await apiGetMessages(eventId);
-      setMessages(m.messages || []);
+      if (data.chat_room_id) {
+        const m = await apiGetMessages(data.chat_room_id);
+        setMessages(m.messages || []);
+      }
       // Load pending suggestions if I'm the creator (silently no-op otherwise).
       if (data.is_creator) {
         try {
@@ -848,8 +820,9 @@ export const EventModal = ({
     if (!isEditMode || tab !== "chat") return;
     const rid = eventData?.chat_room_id;
     const load = async () => {
+      if (!rid) return;
       try {
-        const m = await apiGetMessages(eventId);
+        const m = await apiGetMessages(rid);
         setMessages(m.messages || []);
         // Tanda 7T — la pestaña está ABIERTA: lo cargado queda leído.
         // El backend emite chat:read y el resto de superficies (badges
@@ -1329,11 +1302,12 @@ export const EventModal = ({
   // ----- chat: send text -----
   const handleSendMessage = async () => {
     const text = chatText.trim();
-    if (!text) return;
+    const rid = eventData?.chat_room_id;
+    if (!text || !rid) return;
     try {
-      await apiPostMessage(eventId, { text });
+      await apiPostMessage(rid, { text });
       setChatText("");
-      const m = await apiGetMessages(eventId);
+      const m = await apiGetMessages(rid);
       setMessages(m.messages || []);
     } catch (e) {
       showToast(e.message, "danger");
@@ -1360,12 +1334,14 @@ export const EventModal = ({
       console.error("Compression failed, sending raw:", compressErr);
       mediaUrl = await fileToBase64(file);
     }
+    const rid = eventData?.chat_room_id;
+    if (!rid) return;
     try {
-      await apiPostMessage(eventId, {
+      await apiPostMessage(rid, {
         media_url: mediaUrl,
         media_type: "image",
       });
-      const m = await apiGetMessages(eventId);
+      const m = await apiGetMessages(rid);
       setMessages(m.messages || []);
     } catch (err) {
       showToast(err.message || "Failed to send image", "danger");
@@ -1402,11 +1378,13 @@ export const EventModal = ({
             const { uploadMedia } = await import("../utils/uploadImage");
             mediaUrl = await uploadMedia(dataUrl, "audio");
           } catch (_) { /* fallback base64 */ }
-          await apiPostMessage(eventId, {
+          const rid = eventData?.chat_room_id;
+          if (!rid) return;
+          await apiPostMessage(rid, {
             media_url: mediaUrl,
             media_type: "audio",
           });
-          const m = await apiGetMessages(eventId);
+          const m = await apiGetMessages(rid);
           setMessages(m.messages || []);
         } catch (err) {
           showToast(err.message || "Failed to send audio", "danger");
@@ -1459,7 +1437,7 @@ export const EventModal = ({
     try {
       await apiEditMessage(rid, editingMsgId, trimmed);
       cancelEdit();
-      const m = await apiGetMessages(eventId);
+      const m = await apiGetMessages(rid);
       setMessages(m.messages || []);
     } catch (err) {
       showToast(err.message || "Failed to edit message", "danger");
@@ -2242,7 +2220,7 @@ export const EventModal = ({
                               {hasImage && (
                                 <img
                                   src={m.media_url}
-                                  alt="foto"
+                                  alt="photo"
                                   className="chat-img"
                                 />
                               )}
@@ -2260,7 +2238,7 @@ export const EventModal = ({
                           <div className="meta">
                             {new Date(m.created_at).toLocaleString()}
                             {m.edited_at && (
-                              <span className="meta-edited">(editado)</span>
+                              <span className="meta-edited">(edited)</span>
                             )}
                             {showEditBtn && (
                               <Button

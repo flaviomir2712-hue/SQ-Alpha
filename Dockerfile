@@ -21,7 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
-COPY migrations/ ./migrations/
 
 # Tanda 10 — Fix 500 en login/register. Las migraciones de Alembic
 # NUNCA se copiaban a la imagen (solo src/ y dist/), así que `flask db

@@ -572,15 +572,6 @@ def _accepted_friend_count(user_id):
 
 
 # =========================================================
-# HELLO
-# =========================================================
-
-@api.route('/hello', methods=['GET'])
-def handle_hello():
-    return jsonify({"message": "Hello! I'm a message that came from the backend"}), 200
-
-
-# =========================================================
 # REGISTER
 # =========================================================
 
@@ -934,19 +925,6 @@ def password_reset_confirm():
     user.email_verified = True
     db.session.commit()
     return jsonify({"msg": "Password updated. You can now log in."}), 200
-
-
-# =========================================================
-# PRIVATE
-# =========================================================
-
-@api.route('/private', methods=['GET'])
-@jwt_required()
-def private():
-    user = User.query.get(get_jwt_identity())
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    return jsonify({"msg": "Private route accessed", "user": user.serialize()}), 200
 
 
 # =========================================================
@@ -1466,103 +1444,6 @@ def respond_event(event_id):
         }), 200
 
     return jsonify({"msg": "No pending invitation and not a participant"}), 404
-
-
-# ---------- RSVP (legacy, participants only) ----------
-@api.route('/events/<int:event_id>/rsvp', methods=['PATCH'])
-@jwt_required()
-def rsvp_event(event_id):
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-
-    if current_user_id not in [p.id for p in event.participants]:
-        return jsonify({"msg": "You are not a participant of this event"}), 403
-
-    body = request.get_json() or {}
-    rsvp = body.get("rsvp")
-    if rsvp not in ("going", "maybe", "not_going"):
-        return jsonify({"msg": "rsvp must be one of: going, maybe, not_going"}), 400
-
-    # IDEMPOTENCIA: mismo patrón que respond_event — sin esto, click
-    # repetido en el mismo botón crea N notifs duplicadas.
-    previous_row = db.session.execute(
-        text(
-            "SELECT rsvp FROM event_participants "
-            "WHERE event_id = :eid AND user_id = :uid"),
-        {"eid": event_id, "uid": current_user_id},
-    ).first()
-    previous_rsvp = previous_row[0] if previous_row else None
-
-    db.session.execute(
-        text("UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
-        {"r": rsvp, "eid": event_id, "uid": current_user_id},
-    )
-    responder = db.session.get(User, current_user_id)
-    if previous_rsvp != rsvp:
-        _notify_rsvp_changed(event, responder, rsvp)
-    db.session.commit()
-    if previous_rsvp != rsvp:
-        _emit_event_ping(event, "rsvp")
-    return jsonify({
-        "msg": "RSVP updated" if previous_rsvp != rsvp else "RSVP unchanged",
-        "event": event.serialize(current_user_id=current_user_id),
-    }), 200
-
-
-# ---------- ACCEPT / REFUSE (legacy aliases of /respond) ----------
-@api.route('/events/<int:event_id>/accept', methods=['PUT'])
-@jwt_required()
-def accept_event_invitation(event_id):
-    """Legacy: same as POSTing { response: 'going' } to /respond."""
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-
-    inv = EventInvitation.query.filter_by(
-        event_id=event_id, user_id=current_user_id).first()
-    if not inv:
-        return jsonify({"msg": "No pending invitation for this event"}), 404
-
-    user = db.session.get(User, current_user_id)
-    if user not in event.participants:
-        event.participants.append(user)
-    db.session.delete(inv)
-    _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
-    db.session.flush()
-    db.session.execute(
-        text("UPDATE event_participants SET rsvp = 'going' WHERE event_id = :eid AND user_id = :uid"),
-        {"eid": event_id, "uid": current_user_id},
-    )
-    _notify_rsvp_changed(event, user, "going")
-    db.session.commit()
-    _emit_event_ping(event, "rsvp")
-    return jsonify({"msg": "Invitation accepted", "event": event.serialize(current_user_id=current_user_id)}), 200
-
-
-@api.route('/events/<int:event_id>/refuse', methods=['PUT'])
-@jwt_required()
-def refuse_event_invitation(event_id):
-    """Legacy: same as POSTing { response: 'not_going' } to /respond."""
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-
-    inv = EventInvitation.query.filter_by(
-        event_id=event_id, user_id=current_user_id).first()
-    if not inv:
-        return jsonify({"msg": "No pending invitation for this event"}), 404
-
-    responder = db.session.get(User, current_user_id)
-    db.session.delete(inv)
-    _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
-    _notify_rsvp_changed(event, responder, "not_going")
-    db.session.commit()
-    _emit_event_ping(event, "rsvp")
-    return jsonify({"msg": "Invitation refused"}), 200
 
 
 # ---------- LEAVE EVENT ----------
@@ -2921,67 +2802,6 @@ def delete_room_message(room_id, msg_id):
     db.session.commit()
     _emit_chat_ping(room)
     return jsonify({"msg": "Message deleted", "message": msg.serialize()}), 200
-
-
-# ---------- LEGACY: event chat shortcuts ----------
-
-@api.route('/events/<int:event_id>/chat/messages', methods=['GET'])
-@jwt_required()
-def list_event_messages(event_id):
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-    if current_user_id not in [p.id for p in event.participants]:
-        return jsonify({"msg": "Not a participant of this event"}), 403
-
-    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
-    if not room:
-        room = ChatRoom(type="event", event_id=event_id)
-        db.session.add(room)
-        db.session.commit()
-
-    messages = ChatMessage.query.filter_by(
-        room_id=room.id).order_by(ChatMessage.created_at).all()
-    return jsonify({"room_id": room.id, "messages": [m.serialize() for m in messages]}), 200
-
-
-@api.route('/events/<int:event_id>/chat/messages', methods=['POST'])
-@jwt_required()
-def post_event_message(event_id):
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-    if current_user_id not in [p.id for p in event.participants]:
-        return jsonify({"msg": "Not a participant of this event"}), 403
-
-    body = request.get_json() or {}
-    text_v = (body.get("text") or "").strip() or None
-    media_url = body.get("media_url") or None
-    media_type = body.get("media_type") or None
-
-    if not text_v and not media_url:
-        return jsonify({"msg": "text or media_url is required"}), 400
-    if media_url and media_type not in ("image", "audio"):
-        return jsonify({"msg": "media_type must be 'image' or 'audio' when media_url is set"}), 400
-
-    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
-    if not room:
-        room = ChatRoom(type="event", event_id=event_id)
-        db.session.add(room)
-        db.session.flush()
-
-    msg = ChatMessage(
-        room_id=room.id, sender_id=current_user_id,
-        text=text_v, media_url=media_url, media_type=media_type,
-    )
-    db.session.add(msg)
-    membership = _get_or_create_membership(room.id, current_user_id)
-    membership.last_read_at = datetime.utcnow()
-    db.session.commit()
-    _emit_chat_ping(room)
-    return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
 
 
 # =========================================================

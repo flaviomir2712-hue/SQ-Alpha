@@ -35,27 +35,14 @@ import { Calendar } from "./Calendar";
 // =============================================================
 // INLINE API + STYLES
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
-const handle = async (res) => {
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
+import { api } from "../services/api";
 const apiListEvents = () =>
-  fetch(`${API}/api/events`, { headers: authHeaders() }).then(handle);
+  api.get(`/events`);
 
 // Unified response (going/maybe/not_going). Works for invitees (joins them
 // or declines the invitation) AND participants (just updates rsvp).
 const apiRespond = (eventId, response) =>
-  fetch(`${API}/api/events/${eventId}/respond`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify({ response }),
-  }).then(handle);
+  api.put(`/events/${eventId}/respond`, { response });
 
 const CSS = `
 .events-list-page {

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { Container, Card, Button, Spinner, Badge, Alert } from "react-bootstrap";
 import { FiUsers, FiBriefcase, FiCheckCircle } from "react-icons/fi";
+import { api } from "../services/api";
 
 // =============================================================
 // TeamInvite — Phase 5b, route /team/invite/:token
@@ -9,16 +10,6 @@ import { FiUsers, FiBriefcase, FiCheckCircle } from "react-icons/fi";
 // if the visitor isn't logged in we point them to /login first.
 // =============================================================
 
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
 
 const ROLE_LABEL = { manager: "Manager", editor: "Editor", viewer: "Viewer" };
 
@@ -54,9 +45,7 @@ export const TeamInvite = () => {
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch(`${API}/api/team/invites/${token}`, { headers: authHeaders() });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
+        const data = await api.get(`/team/invites/${token}`);
         setInfo(data);
       } catch (e) {
         setErr(e.message);
@@ -70,9 +59,7 @@ export const TeamInvite = () => {
     setJoining(true);
     setErr(null);
     try {
-      await fetch(`${API}/api/team/invites/${token}/accept`, {
-        method: "POST", headers: authHeaders(),
-      }).then(handle);
+      await api.post(`/team/invites/${token}/accept`);
       setJoined(true);
       setTimeout(() => navigate("/manage"), 1200);
     } catch (e) {

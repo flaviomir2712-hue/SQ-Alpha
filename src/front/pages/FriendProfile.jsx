@@ -32,62 +32,33 @@ import {
 // =============================================================
 // INLINE API HELPERS
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
+import { api } from "../services/api";
 
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
 
 const apiGetUserProfile = (userId) =>
-  fetch(`${API}/api/profile/${userId}`, { headers: authHeaders() }).then(handle);
+  api.get(`/profile/${userId}`);
 
 const apiSendRequest = (payload) =>
-  fetch(`${API}/api/friends/requests`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
-  }).then(handle);
+  api.post(`/friends/requests`, payload);
 
 const apiAcceptRequest = (id) =>
-  fetch(`${API}/api/friends/requests/${id}/accept`, {
-    method: "PUT",
-    headers: authHeaders(),
-  }).then(handle);
+  api.put(`/friends/requests/${id}/accept`);
 
 const apiRefuseRequest = (id) =>
-  fetch(`${API}/api/friends/requests/${id}/refuse`, {
-    method: "PUT",
-    headers: authHeaders(),
-  }).then(handle);
+  api.put(`/friends/requests/${id}/refuse`);
 
 const apiCancelRequest = (id) =>
-  fetch(`${API}/api/friends/requests/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  }).then(handle);
+  api.del(`/friends/requests/${id}`);
 
 const apiUnfriend = (userId) =>
-  fetch(`${API}/api/friends/${userId}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  }).then(handle);
+  api.del(`/friends/${userId}`);
 
 // Create a DM with this user, or return the existing one. The backend
 // (/chat/dm) is idempotent: it returns the existing room if there is one,
 // or creates a new room otherwise. Either way we get back room.id.
 const apiCreateOrGetDm = (userId) =>
-  fetch(`${API}/api/chat/dm`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ user_id: userId }),
-  }).then(handle);
+  api.post(`/chat/dm`, { user_id: userId });
 
 // =============================================================
 // INLINE STYLES (reuses Friends page palette)

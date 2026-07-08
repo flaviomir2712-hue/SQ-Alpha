@@ -50,6 +50,10 @@ class User(db.Model):
     # nacen en False hasta que clican el link del correo.
     email_verified:      Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="true")
+    # Staff flag -- the ONLY thing that unlocks /admin/ (see api/admin.py).
+    # Never exposed on public endpoints; set via the CLI (flask promote-admin).
+    is_admin:            Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false")
 
     # ── account type ────────────────────────────────
     # Set at registration via the 3-button chooser (person / company /
