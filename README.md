@@ -1,81 +1,173 @@
-# WebApp boilerplate with React JS and Flask API
+# SideQuest
 
-Build web applications using React.js for the front end and python/flask for your backend API.
+**A social network for real‑life events between friends.** The home screen is a live
+map: create events ("quests"), invite friends, RSVP, and chat in real time. Businesses
+and influencers get their own space to publish events, manage a team, and reach people
+nearby.
 
-- Documentation can be found here: https://4geeks.com/docs/start/react-flask-template
-- Here is a video on [how to use this template](https://www.loom.com/share/f37c6838b3f1496c95111e515e83dd9b)
-- Integrated with Pipenv for package managing.
-- Fast deployment to Render [in just a few steps here](https://4geeks.com/docs/start/deploy-to-render-com).
-- Use of .env file.
-- SQLAlchemy integration for database abstraction.
+> Status: **beta** — deployed at `https://sidequest-beta.fly.dev`.
+> The app UI is in **English**; in‑code comments are in Spanish (project convention).
 
-### 1) Installation:
+---
 
-> If you use Github Codespaces (recommended) or Gitpod this template will already come with Python, Node and the Posgres Database installed. If you are working locally make sure to install Python 3.10, Node 
+## Features
 
-It is recomended to install the backend first, make sure you have Python 3.10, Pipenv and a database engine (Posgress recomended)
+- **Map home** — a full‑screen map (MapLibre / Leaflet) is the first screen after login;
+  past events are always hidden, upcoming ones are capped by a time filter.
+- **Events / quests** — create, edit, set date/time/duration, cover photo, location
+  (address autocomplete via Nominatim), and an optional ticket price (pro accounts).
+- **RSVP & participants** — going / maybe / not going, invite friends, suggest invites,
+  approve or refuse suggestions, remove participants.
+- **Per‑event chat** — real‑time messaging (text, image, audio), 15‑minute edit window,
+  read receipts, powered by Socket.IO.
+- **Friends & DMs** — friend requests (accept / refuse / cancel), a friend cap that
+  grows with Premium, username search, suggestions, and one‑to‑one direct messages.
+- **Discover** — one unified list of nearby / trip events that merges internal SideQuest
+  events (from business & influencer accounts) with external providers (Ticketmaster,
+  and holiday sources) behind a common schema. "Near me" (GPS) and "City / trip" modes.
+- **Business & influencer hub (`/manage`)** — a Pro workspace: multiple companies per
+  owner, per‑company **team management** with roles (owner / manager / editor / viewer)
+  and single‑use invite links, priced events, an "events users created at your place"
+  count, private team notes, and reviews.
+- **Subscriptions** — Premium (person accounts: bigger friend cap, coins, rewards) and
+  Pro (business / influencer: priced events, Discover priority, professional profile).
+  Billing is not wired yet — activation turns on a free 30‑day trial.
+- **Legal pages** — Terms, Privacy and Legal Notice (GDPR / LCEN / LSSI).
+- **Admin panel** — a secured Flask‑Admin dashboard at `/admin/`.
 
-1. Install the python packages: `$ pipenv install`
-2. Create a .env file based on the .env.example: `$ cp .env.example .env`
-3. Install your database engine and create your database, depending on your database you have to create a DATABASE_URL variable with one of the possible values, make sure you replace the valudes with your database information:
+---
 
-| Engine    | DATABASE_URL                                        |
-| --------- | --------------------------------------------------- |
-| SQLite    | sqlite:////test.db                                  |
-| MySQL     | mysql://username:password@localhost:port/example    |
-| Postgress | postgres://username:password@localhost:5432/example |
+## Tech stack
 
-4. Migrate the migrations: `$ pipenv run migrate` (skip if you have not made changes to the models on the `./src/api/models.py`)
-5. Run the migrations: `$ pipenv run upgrade`
-6. Run the application: `$ pipenv run start`
+**Backend** — Python 3.13, Flask, SQLAlchemy, Flask‑Migrate (Alembic), Flask‑JWT‑Extended
+(session in an httpOnly cookie + CSRF), Flask‑SocketIO (threading mode + `simple-websocket`),
+Flask‑CORS, Flask‑Admin, Cloudinary (image/PDF uploads), `requests` (external event
+providers), Gunicorn, PostgreSQL (`psycopg2`). Managed with **Pipenv**.
 
-> Note: Codespaces users can connect to psql by typing: `psql -h localhost -U gitpod example`
+**Frontend** — React + Vite, React Router, React‑Bootstrap, React‑Icons, Leaflet /
+React‑Leaflet / MapLibre GL (map), `socket.io-client`.
 
-### Undo a migration
+**Infrastructure** — single‑container deploy on **Fly.io** (Flask serves both the API and
+the compiled frontend). Dev in GitHub Codespaces / Gitpod / Dev Containers.
 
-You are also able to undo a migration by running
+---
+
+## Project structure
+
+```
+src/
+  api/            # Flask backend
+    app.py            # app factory / entrypoint (do not edit lightly)
+    routes.py         # REST API (/api/*)
+    models.py         # SQLAlchemy models (User, Event, Business, Team, Chat, …)
+    discover.py       # Discover blueprint: internal + external event providers
+    sockets.py        # Socket.IO events (chat, presence)
+    mailer.py         # transactional email (password reset, …)
+    admin.py          # Flask-Admin dashboard (/admin)
+    commands.py       # flask CLI commands (seed data, promote-admin)
+    utils.py          # helpers
+  front/            # React frontend
+    pages/            # routed screens (Home/map, Friends, Events, Discover, /manage, …)
+    components/       # EventModal, DiscoverPanel, Navbar, TeamManager, …
+    services/         # api.js (HTTP wrapper) + auth.js (cookie + CSRF fetch patch)
+    hooks/            # useChat, useNotifications, useGlobalReducer
+migrations/         # Alembic migrations
+```
+
+**Auth model (important).** The JWT lives in an httpOnly cookie (`sq_access_token`) that
+JavaScript cannot read. A global `fetch` patch in `src/front/services/auth.js` attaches
+the cookie (`credentials: "include"`) and the `X‑CSRF‑TOKEN` header to every backend call,
+and strips any legacy `Authorization` header. Use `src/front/services/api.js`
+(`api.get/post/put/del`) for backend requests — it centralises error handling and the
+401 → `/login` redirect.
+
+---
+
+## Getting started
+
+### GitHub Codespaces / Gitpod (recommended)
+
+Python, Node and PostgreSQL come pre‑installed. Then:
 
 ```sh
-$ pipenv run downgrade
+pipenv install                 # backend deps
+cp .env.example .env           # then fill in the variables (see below)
+pipenv run upgrade             # apply DB migrations
+pipenv run start               # backend on http://localhost:3001
+
+npm install                    # frontend deps
+npm run start                  # frontend on http://localhost:3000
 ```
 
-### Backend Populate Table Users
+### Local
 
-To insert test users in the database execute the following command:
+Requires Python 3.13, Pipenv, Node, and a PostgreSQL database. Same steps as above.
 
-```sh
-$ flask insert-test-users 5
-```
+### Useful commands
 
-And you will see the following message:
+| Command | What it does |
+| --- | --- |
+| `pipenv run start` | Run the backend (`flask run -p 3001 -h 0.0.0.0`) |
+| `npm run start` | Run the frontend (Vite dev server, port 3000) |
+| `pipenv run migrate` | Autogenerate a migration after changing `models.py` |
+| `pipenv run upgrade` / `downgrade` | Apply / roll back migrations |
+| `npm run build` | Build the frontend into `dist/` |
+| `npm run lint` | ESLint (0 warnings allowed) |
+| `flask insert-test-data` | Seed demo data |
+| `flask promote-admin <email>` | Grant a user admin access to `/admin/` |
 
-```
-  Creating test users
-  test_user1@test.com created.
-  test_user2@test.com created.
-  test_user3@test.com created.
-  test_user4@test.com created.
-  test_user5@test.com created.
-  Users created successfully!
-```
+---
 
-### **Important note for the database and the data inside it**
+## Environment variables
 
-Every Github codespace environment will have **its own database**, so if you're working with more people eveyone will have a different database and different records inside it. This data **will be lost**, so don't spend too much time manually creating records for testing, instead, you can automate adding records to your database by editing ```commands.py``` file inside ```/src/api``` folder. Edit line 32 function ```insert_test_data``` to insert the data according to your model (use the function ```insert_test_users``` above as an example). Then, all you need to do is run ```pipenv run insert-test-data```.
+Fill these in your `.env` (see `.env.example` for the base set). **Never commit real
+secrets.** `.env.example` currently ships only the core keys — the app also needs the
+image, email and event‑provider keys below.
 
-### Front-End Manual Installation:
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `FLASK_APP_KEY` | JWT / session signing key (rotating it invalidates sessions) |
+| `FLASK_APP` | `src/app.py` |
+| `VITE_BACKEND_URL` | Backend base URL, baked into the frontend **at build time** |
+| `VITE_BASENAME` | Router base path (usually `/`) |
+| `CLOUDINARY_URL` | Cloudinary credentials for image / PDF uploads |
+| `MAIL_SMTP_HOST` / `MAIL_SMTP_PORT` / `MAIL_SMTP_USER` / `MAIL_SMTP_PASSWORD` / `MAIL_FROM` | Transactional email (e.g. password reset) |
+| `TICKETMASTER_API_KEY` | Discover: Ticketmaster provider |
+| `HASDATA_API_KEY`, `PREDICTHQ_TOKEN`, `CALENDARIFIC_API_KEY` | Discover: optional extra providers |
 
--   Make sure you are using node version 20 and that you have already successfully installed and runned the backend.
+> On Fly.io, `VITE_BACKEND_URL` must be injected as a **build arg** (it is compiled into
+> the bundle). If it is missing, the frontend calls `undefined/api/...` and cannot reach
+> the backend.
 
-1. Install the packages: `$ npm install`
-2. Start coding! start the webpack dev server `$ npm run start`
+---
 
-## Publish your website!
+## Deployment (Fly.io)
 
-This boilerplate it's 100% read to deploy with Render.com and Heroku in a matter of minutes. Please read the [official documentation about it](https://4geeks.com/docs/start/deploy-to-render-com).
+The app deploys as a **single container** (`Dockerfile`) where Flask serves the API,
+`/socket.io/*`, and the compiled `dist/`. Key points baked into `fly.toml`:
 
-### Contributors
+- `release_command = "flask db upgrade"` runs migrations on every deploy (Fly ignores the
+  `Procfile`, so this is required — otherwise schema drift causes 500s on login/register).
+- Build with the backend URL: `fly deploy --build-arg VITE_BACKEND_URL=https://<app>.fly.dev`.
+- `allowed_origins()` in `sockets.py` must include the Fly domain or the Socket.IO
+  handshake is rejected (the client then falls back to long‑polling).
 
-This template was built as part of the 4Geeks Academy [Coding Bootcamp](https://4geeksacademy.com/us/coding-bootcamp) by [Alejandro Sanchez](https://twitter.com/alesanchezr) and many other contributors. Find out more about our [Full Stack Developer Course](https://4geeksacademy.com/us/coding-bootcamps/part-time-full-stack-developer), and [Data Science Bootcamp](https://4geeksacademy.com/us/coding-bootcamps/datascience-machine-learning).
+---
 
-You can find other templates and resources like this at the [school github page](https://github.com/4geeksacademy/).
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for branch flow, commit style, and the definition
+of done. The team's agile process is documented in [docs/AGILE.md](docs/AGILE.md).
+Change history lives in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## License
+
+No open‑source license yet — all rights reserved by the SideQuest Teams until a license
+is chosen.
+
+---
+
+Made with ♦ by **SideQuest Teams**.

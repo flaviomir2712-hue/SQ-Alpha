@@ -21,7 +21,11 @@ const handleResponse = async (res) => {
     throw new Error("Session expired");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Error ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.msg || `Error ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 };
 

@@ -12,6 +12,8 @@ import {
   FiX,
 } from "react-icons/fi";
 
+import { api } from "../services/api";
+
 // =============================================================
 // CompanyEventCard — una tarjeta de evento dentro del hub de empresas
 // (Phase 5a). Muestra los datos enriquecidos de GET /api/manage/events:
@@ -21,22 +23,8 @@ import {
 // Estilo coherente con EventsList (.event-card, tema oscuro de SideQuest).
 // =============================================================
 
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
-
-const apiSaveTeamNote = async (eventId, teamNote) => {
-  const res = await fetch(`${API}/api/events/${eventId}`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify({ team_note: teamNote }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
+const apiSaveTeamNote = (eventId, teamNote) =>
+  api.put(`/events/${eventId}`, { team_note: teamNote });
 
 const CSS = `
 .company-event-card {

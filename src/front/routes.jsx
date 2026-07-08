@@ -7,8 +7,6 @@ import {
 import { Layout } from "./pages/Layout";
 import { LandingPage } from "./pages/LandingPage";
 import { Home } from "./pages/Home";
-import { Single } from "./pages/Single";
-import { Demo } from "./pages/Demo";
 import { Register } from "./pages/Register";
 import { Login } from "./pages/Login";
 import { Friends } from "./pages/Friends";
@@ -46,8 +44,6 @@ export const router = createBrowserRouter(
       <Route path="/" element={<LandingPage />} />
       {/* The actual app (fullscreen map). Reached after login/register. */}
       <Route path="/app" element={<Home />} />
-      <Route path="/demo" element={<Demo />} />
-      <Route path="/single/:theId" element={<Single />} />
       <Route path="/register" element={<Register />} />
       <Route path="/login" element={<Login />} />
       {/* Tanda 7E/7H — reset por link de email (pública, sin sesión).

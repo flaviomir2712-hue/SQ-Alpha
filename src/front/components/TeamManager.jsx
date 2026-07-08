@@ -10,6 +10,8 @@ import {
   FiShield,
 } from "react-icons/fi";
 
+import { api } from "../services/api";
+
 // =============================================================
 // TeamManager — Phase 5b. Per-company team management (Badakan-like).
 // Lists members + role, lets owner/manager invite (single-use link or by
@@ -18,24 +20,13 @@ import {
 // Dark theme: global .sq-modal + a scoped style block.
 // =============================================================
 
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
-
-const apiGetTeam      = (bid) => fetch(`${API}/api/businesses/${bid}/team`, { headers: authHeaders() }).then(handle);
-const apiInvite       = (bid, body) => fetch(`${API}/api/businesses/${bid}/team/invites`, { method: "POST", headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
-const apiUpdateMember = (bid, uid, body) => fetch(`${API}/api/businesses/${bid}/team/${uid}`, { method: "PUT", headers: authHeaders(), body: JSON.stringify(body) }).then(handle);
-const apiRemoveMember = (bid, uid) => fetch(`${API}/api/businesses/${bid}/team/${uid}`, { method: "DELETE", headers: authHeaders() }).then(handle);
-const apiRevokeInvite = (bid, iid) => fetch(`${API}/api/businesses/${bid}/team/invites/${iid}`, { method: "DELETE", headers: authHeaders() }).then(handle);
+const apiGetTeam      = (bid) => api.get(`/businesses/${bid}/team`);
+const apiInvite       = (bid, body) => api.post(`/businesses/${bid}/team/invites`, body);
+const apiUpdateMember = (bid, uid, body) => api.put(`/businesses/${bid}/team/${uid}`, body);
+const apiRemoveMember = (bid, uid) => api.del(`/businesses/${bid}/team/${uid}`);
+const apiRevokeInvite = (bid, iid) => api.del(`/businesses/${bid}/team/invites/${iid}`);
 // Autocomplete por username (reutiliza la búsqueda de usuarios existente).
-const apiSearchUsers = (q) => fetch(`${API}/api/friends/search?q=${encodeURIComponent(q)}`, { headers: authHeaders() }).then(handle);
+const apiSearchUsers = (q) => api.get(`/friends/search?q=${encodeURIComponent(q)}`);
 
 const ROLE_BADGE = {
   owner:   { bg: "primary",   label: "Owner" },

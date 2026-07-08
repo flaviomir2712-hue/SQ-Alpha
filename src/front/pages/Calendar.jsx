@@ -8,26 +8,13 @@ import {
 import { EventModal } from "../components/EventModal";
 
 // ─── API ─────────────────────────────────────────────────────────────────────
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
+import { api } from "../services/api";
 const apiListEvents = () =>
-  fetch(`${API}/api/events`, { headers: authHeaders() }).then(handle);
+  api.get(`/events`);
 
 // Unified response (going/maybe/not_going). Joins invitees automatically.
 const apiRespond = (eventId, response) =>
-  fetch(`${API}/api/events/${eventId}/respond`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify({ response }),
-  }).then(handle);
+  api.put(`/events/${eventId}/respond`, { response });
 
 // ─── COLOUR PALETTE ──────────────────────────────────────────────────────────
 const PALETTE = ["#a855f7", "#f97316", "#22d3ee", "#34d399", "#f43f5e", "#facc15", "#60a5fa"];

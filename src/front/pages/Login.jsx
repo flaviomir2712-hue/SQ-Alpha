@@ -172,13 +172,13 @@ export const Login = () => {
 						<Form onSubmit={handleLogin}>
 							<Form.Group className="mb-3">
 								<Form.Label>
-									<FiAtSign className="me-2" /> Email o username
+									<FiAtSign className="me-2" /> Email or username
 								</Form.Label>
 								<Form.Control
 									type="text"
 									value={identifier}
 									onChange={(e) => setIdentifier(e.target.value)}
-									placeholder="alex@example.com o alexchen"
+									placeholder="alex@example.com or alexchen"
 									required
 									autoComplete="username"
 								/>
@@ -220,9 +220,9 @@ export const Login = () => {
 						</div>
 
 						<div className="text-center mt-2 text-secondary small">
-							No tienes cuenta ?{" "}
+							Don't have an account?{" "}
 							<Link to="/register" className="sq-auth-link">
-								Crear cuenta
+								Create account
 							</Link>
 						</div>
 					</Card>

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Container, Row, Col, Card, Spinner, Alert } from "react-bootstrap";
 import { FiHeart, FiBriefcase, FiMapPin } from "react-icons/fi";
+import { api } from "../services/api";
 
 // =============================================================
 // Following — Phase 5b, route /following
@@ -9,12 +10,6 @@ import { FiHeart, FiBriefcase, FiMapPin } from "react-icons/fi";
 // Each card links to the public business page (/business/:id).
 // Dark theme, consistent with CompanyHub / EventsList.
 // =============================================================
-
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
 const CSS = `
 .following-page {
@@ -54,9 +49,7 @@ export const Following = () => {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`${API}/api/businesses/following`, { headers: authHeaders() });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
+        const data = await api.get("/businesses/following");
         setBusinesses(Array.isArray(data) ? data : []);
       } catch (e) {
         setError(e.message);

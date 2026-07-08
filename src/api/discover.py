@@ -754,10 +754,16 @@ def _internal_discover_events(filters):
     lng = filters.get("lng")
     radius = filters.get("radius") or 40
     place = (filters.get("place") or filters.get("city") or "").strip().lower()
+    # El pasado SIEMPRE se oculta en Discover (misma regla que el mapa): un
+    # evento pasado de un business/influencer desaparece como cualquier otro,
+    # sin depender del filtro From/To del usuario.
+    today = dt.date.today().isoformat()
 
     out = []
     for ev in rows:
         if q and q not in ((ev.title or "") + " " + (ev.location or "")).lower():
+            continue
+        if ev.date and ev.date < today:
             continue
         if start and ev.date and ev.date < start:
             continue

@@ -25,6 +25,7 @@ import {
 import { EventModal } from "../components/EventModal";
 import { CompanyEventCard } from "../components/CompanyEventCard";
 import { TeamManager } from "../components/TeamManager";
+import { api } from "../services/api";
 
 // =============================================================
 // CompanyHub — Phase 5a/5b, route /manage
@@ -35,12 +36,6 @@ import { TeamManager } from "../components/TeamManager";
 // Each event is a CompanyEventCard; click opens the EventModal.
 // Consumes /api/manage/scope and /api/manage/events.
 // =============================================================
-
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
 const CSS = `
 .company-hub-page {
@@ -97,11 +92,7 @@ export const CompanyHub = () => {
       setLoadingScope(true);
       setError(null);
       try {
-        const res = await fetch(`${API}/api/manage/scope`, { headers: authHeaders() });
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 403) { setNotPro(true); return; }
-        if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-
+        const data = await api.get("/manage/scope");
         setScopeType(data.type);
         if (data.type === "business") {
           const list = Array.isArray(data.businesses) ? data.businesses : [];
@@ -109,6 +100,7 @@ export const CompanyHub = () => {
           if (list.length) setSelectedBizId(list[0].id);
         }
       } catch (e) {
+        if (e.status === 403) { setNotPro(true); return; }
         setError(e.message);
       } finally {
         setLoadingScope(false);
@@ -123,9 +115,7 @@ export const CompanyHub = () => {
     setError(null);
     try {
       const qs = scopeType === "business" ? `?business_id=${selectedBizId}` : "";
-      const res = await fetch(`${API}/api/manage/events${qs}`, { headers: authHeaders() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
+      const data = await api.get(`/manage/events${qs}`);
       setEvents(Array.isArray(data.events) ? data.events : []);
     } catch (e) {
       setError(e.message);
