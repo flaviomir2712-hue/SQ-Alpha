@@ -25,6 +25,9 @@ import {
 	FiArrowLeft,
 	FiBriefcase,
 	FiChevronDown,
+	FiUsers,
+	FiUserPlus,
+	FiUserCheck,
 } from "react-icons/fi";
 
 import { api } from "../services/api";
@@ -97,6 +100,18 @@ const CSS = `
 .biz-rate-star { cursor: pointer; }
 .sq-grad-btn { background: linear-gradient(135deg,#6366f1,#4f46e5); border: none; font-weight: 600; }
 .sq-grad-btn:hover, .sq-grad-btn:focus { background: linear-gradient(135deg,#4f46e5,#4338ca); }
+.inf-opinion-btn { color: #6366f1 !important; border-color: #3a3f7a !important; }
+.inf-opinion-btn:hover { background: rgba(99,102,241,0.12) !important; color: #a5b4fc !important; }
+/* location autocomplete */
+.biz-loc-wrap { position: relative; }
+.biz-loc-menu {
+  position: absolute; z-index: 20; top: 100%; left: 0; right: 0;
+  background: #161922; border: 1px solid #262a36; border-radius: 10px; margin-top: 4px;
+  max-height: 220px; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+.biz-loc-item { padding: 0.5rem 0.7rem; cursor: pointer; font-size: 0.85rem; color: #cfd3dc; border-bottom: 1px solid #20242f; }
+.biz-loc-item:last-child { border-bottom: none; }
+.biz-loc-item:hover { background: #1e2230; color: #fff; }
 /* Multi-business switcher (wireframe: business name ▼ → business 1 / 2) */
 .biz-switch-toggle.dropdown-toggle::after { display: none; }
 .biz-switch-toggle {
@@ -140,6 +155,29 @@ const fmtDate = (iso) => {
 	try { return new Date(iso).toLocaleDateString(); } catch { return ""; }
 };
 
+// Forward geocode (address -> suggestions) — same Nominatim source the
+// event form uses, so business location behaves identically.
+const geocodeLocation = async (query) => {
+	if (!query || query.trim().length < 3) return [];
+	try {
+		const params = new URLSearchParams({
+			format: "json", q: query.trim(), addressdetails: "1", limit: "5",
+		});
+		const res = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+			headers: { "Accept-Language": "en" },
+		});
+		if (!res.ok) return [];
+		const data = await res.json();
+		return (data || []).map((d) => ({
+			label: d.display_name,
+			lat: parseFloat(d.lat),
+			lng: parseFloat(d.lon),
+		}));
+	} catch {
+		return [];
+	}
+};
+
 // =============================================================
 // MAIN
 // =============================================================
@@ -158,6 +196,16 @@ export const BusinessProfile = () => {
 	const [savingBiz, setSavingBiz] = useState(false);
 	const [form, setForm] = useState({});
 	const editPhotoRef = useRef(null);
+
+	// follow state
+	const [following, setFollowing] = useState(false);
+	const [followers, setFollowers] = useState(0);
+	const [followBusy, setFollowBusy] = useState(false);
+
+	// location autocomplete (edit modal)
+	const [locSuggestions, setLocSuggestions] = useState([]);
+	const [locOpen, setLocOpen] = useState(false);
+	const locDebounceRef = useRef(null);
 
 	// new-post composer
 	const [postText, setPostText] = useState("");
@@ -181,6 +229,8 @@ export const BusinessProfile = () => {
 		try {
 			const data = await api.get(`/business/${id}`);
 			setBiz(data);
+			setFollowing(!!data.is_following);
+			setFollowers(data.followers_count || 0);
 			if (data.my_review) {
 				setMyRating(data.my_review.rating || 0);
 				setMyReviewText(data.my_review.text || "");
@@ -200,13 +250,63 @@ export const BusinessProfile = () => {
 			name: biz.name || "",
 			category: biz.category || "",
 			location: biz.location || "",
+			latitude: biz.latitude ?? null,
+			longitude: biz.longitude ?? null,
 			description: biz.description || "",
 			profile_picture_url: biz.profile_picture_url || "",
 			hours: { ...(biz.hours || {}) },
 		});
+		setLocSuggestions([]);
+		setLocOpen(false);
 		setEditing(true);
 	};
 	const setField = (e) => setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+
+	// location autocomplete: typing searches Nominatim; picking sets coords
+	const onLocationChange = (e) => {
+		const value = e.target.value;
+		setForm((f) => ({ ...f, location: value, latitude: null, longitude: null }));
+		if (locDebounceRef.current) clearTimeout(locDebounceRef.current);
+		if (value.trim().length < 3) { setLocSuggestions([]); setLocOpen(false); return; }
+		locDebounceRef.current = setTimeout(async () => {
+			const hits = await geocodeLocation(value);
+			setLocSuggestions(hits);
+			setLocOpen(hits.length > 0);
+		}, 350);
+	};
+	const pickSuggestion = (s) => {
+		setForm((f) => ({ ...f, location: s.label, latitude: s.lat, longitude: s.lng }));
+		setLocSuggestions([]);
+		setLocOpen(false);
+	};
+
+	// ---------- follow ----------
+	const toggleFollow = async () => {
+		setFollowBusy(true);
+		try {
+			const res = following
+				? await api.del(`/business/${id}/follow`)
+				: await api.post(`/business/${id}/follow`, {});
+			setFollowing(res.is_following);
+			setFollowers(res.followers_count);
+		} catch (e) { showToast(e.message, "danger"); }
+		finally { setFollowBusy(false); }
+	};
+
+	// ---------- create event at this place ----------
+	// Hands the place location (and, for the owner, the business id so the
+	// event lands in this carousel) to the map, which opens the prefilled
+	// EventModal — same handoff used by Discover.
+	const createEventHere = () => {
+		const payload = {
+			location: biz.location || biz.name || "",
+			latitude: biz.latitude ?? null,
+			longitude: biz.longitude ?? null,
+		};
+		if (biz.is_owner) payload.business_id = biz.id;
+		try { sessionStorage.setItem("sq_discover_prefill", JSON.stringify(payload)); } catch { /* ignore */ }
+		navigate("/app");
+	};
 	const setHour = (day, which, value) =>
 		setForm((f) => ({
 			...f,
@@ -380,21 +480,38 @@ export const BusinessProfile = () => {
 									<h1 className="text-light mb-0">{biz.name}</h1>
 									{biz.category && <Badge bg="secondary" className="text-capitalize">{biz.category}</Badge>}
 								</div>
-								<div className="d-flex align-items-center gap-2 mb-2">
+								<div className="d-flex align-items-center gap-3 mb-2 flex-wrap">
 									{biz.rating != null ? (
-										<>
+										<span className="d-flex align-items-center gap-2">
 											<Stars value={biz.rating} />
 											<span className="text-light fw-semibold">{biz.rating}</span>
 											<span className="text-secondary small">({biz.reviews_count} review{biz.reviews_count === 1 ? "" : "s"})</span>
-										</>
+										</span>
 									) : (
 										<span className="text-secondary small">No reviews yet</span>
 									)}
+									<span className="text-secondary small"><FiUsers className="me-1" />{followers} follower{followers === 1 ? "" : "s"}</span>
 								</div>
 								{biz.location && (
 									<div className="text-secondary"><FiMapPin className="me-1" />{biz.location}</div>
 								)}
 								{biz.description && <p className="text-light mt-2 mb-0">{biz.description}</p>}
+								<div className="d-flex gap-2 mt-3 flex-wrap">
+									{!biz.is_owner && (
+										<Button
+											size="sm"
+											className={following ? "" : "sq-grad-btn"}
+											variant={following ? "outline-light" : undefined}
+											onClick={toggleFollow}
+											disabled={followBusy}
+										>
+											{following ? <><FiUserCheck className="me-1" /> Following</> : <><FiUserPlus className="me-1" /> Follow</>}
+										</Button>
+									)}
+									<Button size="sm" variant="outline-primary" className="inf-opinion-btn" onClick={createEventHere}>
+										<FiCalendar className="me-1" /> Create event here
+									</Button>
+								</div>
 							</Col>
 						</Row>
 					</Card.Body>
@@ -613,7 +730,30 @@ export const BusinessProfile = () => {
 					</Row>
 					<Form.Group className="mb-3">
 						<Form.Label>Location</Form.Label>
-						<Form.Control name="location" value={form.location || ""} onChange={setField} placeholder="Street, city" />
+						<div className="biz-loc-wrap">
+							<Form.Control
+								name="location"
+								value={form.location || ""}
+								onChange={onLocationChange}
+								onFocus={() => { if (locSuggestions.length) setLocOpen(true); }}
+								placeholder="Start typing an address…"
+								autoComplete="off"
+							/>
+							{locOpen && locSuggestions.length > 0 && (
+								<div className="biz-loc-menu">
+									{locSuggestions.map((s, i) => (
+										<div key={i} className="biz-loc-item" onClick={() => pickSuggestion(s)}>
+											<FiMapPin size={12} className="me-1" />{s.label}
+										</div>
+									))}
+								</div>
+							)}
+						</div>
+						{form.latitude != null && (
+							<div className="small text-secondary mt-1">
+								<FiMapPin size={11} className="me-1" />Pinned at {Number(form.latitude).toFixed(4)}, {Number(form.longitude).toFixed(4)}
+							</div>
+						)}
 					</Form.Group>
 					<Form.Group className="mb-3">
 						<Form.Label>Description</Form.Label>

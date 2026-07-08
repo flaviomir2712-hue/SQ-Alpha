@@ -18,6 +18,7 @@ import {
   FiUser,
   FiCalendar,
   FiUsers,
+  FiBriefcase,
   FiActivity,
   FiImage,
   FiX,
@@ -28,6 +29,7 @@ import useGlobalReducer from "../hooks/useGlobalReducer";
 // Tanda 7D — señal de sesión basada en el user persistido (el JWT vive
 // en una cookie httpOnly).
 import { isLoggedIn } from "../services/auth";
+import { api } from "../services/api";
 // Tanda 7F2 — aviso local "los eventos cambiaron" para que Mapview
 // refetchee al crear desde el "+" del pill.
 import { announceEventsChanged } from "../services/socket";
@@ -43,29 +45,9 @@ export const SHOW_PROFILE_EVENT = "sq:show-profile";
 // =====================================================
 // INLINE API HELPERS (consistent with friends/navbar style)
 // =====================================================
-const API = import.meta.env.VITE_BACKEND_URL;
+const apiGetMyProfile = () => api.get("/profile/me");
 
-// Tanda 7D — la autenticación viaja en la cookie httpOnly + X-CSRF-TOKEN,
-// añadidos por el parche global de fetch (services/auth.js).
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-});
-
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
-
-const apiGetMyProfile = () =>
-  fetch(`${API}/api/profile/me`, { headers: authHeaders() }).then(handle);
-
-const apiUpdateMyProfile = (payload) =>
-  fetch(`${API}/api/profile/me`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
-  }).then(handle);
+const apiUpdateMyProfile = (payload) => api.put("/profile/me", payload);
 
 // Convert a File / Blob to base64 dataURL — same approach used for
 // event.image and chat media. The backend stores it directly in
@@ -346,6 +328,25 @@ export const BottomNavbar = () => {
   // Tanda 7D — señal de sesión = user persistido (el JWT vive en una
   // cookie httpOnly que JS no puede leer).
   const isLogged = isLoggedIn();
+  // Phase 5b — "Manage" se muestra si el usuario puede gestionar algo
+  // (dueño/influencer o miembro de equipo). Lo resuelve /manage/scope.
+  const [canManage, setCanManage] = useState(false);
+  useEffect(() => {
+    if (!isLogged) { setCanManage(false); return; }
+    let cancelled = false;
+    fetch(`${import.meta.env.VITE_BACKEND_URL}/api/manage/scope`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setCanManage(d.type === "influencer" ||
+          (Array.isArray(d.businesses) && d.businesses.length > 0));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // Re-fetch al navegar (tras aceptar invitación) → "Manage" sin recargar.
+  }, [isLogged, location.pathname]);
   // Total de mensajes de chat no leídos — lo mantiene fresco el poll de
   // /chat/rooms del Navbar (cada 15s), ambos montados juntos en Layout.
   const chatUnread = store.chatUnreadTotal || 0;
@@ -587,6 +588,18 @@ export const BottomNavbar = () => {
         >
           <FiUsers size={22} />
         </Link>
+
+        {/* Phase 5a — Gestión: solo business / influencer. */}
+        {canManage && (
+          <Link
+            to="/manage"
+            className={`sq-bottom-nav-item ${isActive("/manage") ? "active" : ""}`}
+            title="Manage"
+            aria-label="Manage"
+          >
+            <FiBriefcase size={22} />
+          </Link>
+        )}
       </nav>
 
       {/* =====================================================

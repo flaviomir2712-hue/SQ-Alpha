@@ -26,6 +26,7 @@ import {
   FiXCircle,
   FiGlobe,
   FiLock,
+  FiTag,
 } from "react-icons/fi";
 
 import { EventModal } from "../components/EventModal";
@@ -34,27 +35,14 @@ import { Calendar } from "./Calendar";
 // =============================================================
 // INLINE API + STYLES
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
-const handle = async (res) => {
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
+import { api } from "../services/api";
 const apiListEvents = () =>
-  fetch(`${API}/api/events`, { headers: authHeaders() }).then(handle);
+  api.get(`/events`);
 
 // Unified response (going/maybe/not_going). Works for invitees (joins them
 // or declines the invitation) AND participants (just updates rsvp).
 const apiRespond = (eventId, response) =>
-  fetch(`${API}/api/events/${eventId}/respond`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify({ response }),
-  }).then(handle);
+  api.put(`/events/${eventId}/respond`, { response });
 
 const CSS = `
 .events-list-page {
@@ -450,11 +438,20 @@ export const EventsList = () => {
                       {statusPill(e)}
                     </div>
 
-                    <div className="mb-2">
+                    <div className="mb-2 d-flex flex-wrap gap-2 align-items-center">
                       <span className={`vis-chip ${e.is_public ? "public" : "private"}`}>
                         {e.is_public ? <FiGlobe size={12} /> : <FiLock size={12} />}
                         {e.is_public ? "Public" : "Private"}
                       </span>
+                      {e.price != null && (
+                        <span
+                          className="vis-chip"
+                          style={{ background: "#1c1708", borderColor: "#4a3a1f", color: "#f5d678" }}
+                          title="Ticket price"
+                        >
+                          <FiTag size={12} /> € {Number(e.price).toFixed(2)}
+                        </span>
+                      )}
                     </div>
 
                     <div className="event-meta mb-1">

@@ -71,4 +71,35 @@ export const compressAndUpload = async (file, kind = "chat") => {
   }
 };
 
+// Lee un File/Blob como dataURL base64 SIN tocarlo (a diferencia de
+// compressImage, que lo re-dibuja en un canvas). Necesario para los PDF:
+// un PDF no se puede cargar en un <img>, así que la ruta de canvas lo
+// rompería.
+const fileToDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+// Sube un DOCUMENTO de prueba/justificante: acepta imagen O PDF.
+//   - Imagen → ruta optimizada de siempre (compressAndUpload).
+//   - PDF    → se lee tal cual y se sube sin comprimir (el backend lo
+//              sube como resource_type="raw" para que sea visualizable).
+// Fallback a base64 si Cloudinary falla, igual que compressAndUpload.
+export const uploadDocument = async (file, kind = "proof") => {
+  const isPdf =
+    file?.type === "application/pdf" || /\.pdf$/i.test(file?.name || "");
+  if (!isPdf) return compressAndUpload(file, kind);
+
+  const dataUrl = await fileToDataUrl(file);
+  try {
+    return await uploadMedia(dataUrl, kind);
+  } catch (err) {
+    console.warn("[uploadImage] PDF upload failed, using base64 fallback:", err?.message);
+    return dataUrl;
+  }
+};
+
 export default compressImage;

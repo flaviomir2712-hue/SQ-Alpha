@@ -32,6 +32,8 @@ import {
 const DEFAULT_VISIBLE = 5;
 
 import { useNotifications } from "../hooks/useNotifications.jsx";
+// Onboarding interactivo — señal "abrió las notificaciones".
+import { announceTourAction, TOUR_ACTIONS } from "../services/tour";
 
 const API_URL = import.meta.env.VITE_BACKEND_URL;
 
@@ -141,6 +143,17 @@ const TYPE_META = {
         avatarClass: "confirm",
         icon: <FiHelpCircle size={18} />,
         navigateTo: () => "/events",
+    },
+    // Phase 5b — invitación a un equipo: click → página de aceptar.
+    team_invite: {
+        avatarClass: "friend",
+        icon: <FiUser size={18} />,
+        navigateTo: (p) => p.token ? `/team/invite/${p.token}` : "/manage",
+    },
+    team_member_joined: {
+        avatarClass: "friend",
+        icon: <FiUser size={18} />,
+        navigateTo: () => "/manage",
     },
 };
 
@@ -495,6 +508,12 @@ const renderMessage = (n) => {
             return (<>Did "<strong>{title}</strong>" happen as planned?</>);
         }
 
+        case "team_invite":
+            return (<>You were invited to <strong>{p.business_name || "a company"}</strong> as <strong>{p.role}</strong></>);
+
+        case "team_member_joined":
+            return (<><strong>{p.username || "Someone"}</strong> joined <strong>{p.business_name || "your company"}</strong> as {p.role}</>);
+
         default:
             return "You have a new notification";
     }
@@ -635,7 +654,13 @@ export const NotificationBell = () => {
         <>
             <style>{BELL_CSS}</style>
 
-            <Dropdown align="end">
+            <Dropdown
+                align="end"
+                onToggle={(isOpen) => {
+                    // Onboarding: abrir la campana cumple el paso de notificaciones.
+                    if (isOpen) announceTourAction(TOUR_ACTIONS.NOTIFICATIONS_OPEN);
+                }}
+            >
                 <Dropdown.Toggle
                     as={Button}
                     className="sq-bell-toggle border-0"

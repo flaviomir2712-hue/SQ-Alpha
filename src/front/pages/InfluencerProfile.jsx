@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Container, Row, Col, Card, Button, Form, Spinner, Alert, Badge } from "react-bootstrap";
 import {
   FiMapPin, FiMail, FiCalendar, FiClock, FiStar, FiArrowLeft,
-  FiImage, FiMessageCircle, FiEdit2, FiTrash2, FiUser,
+  FiImage, FiMessageCircle, FiEdit2, FiTrash2, FiUser, FiUserPlus, FiUserCheck, FiUsers,
 } from "react-icons/fi";
 
 import { api } from "../services/api";
@@ -77,6 +77,29 @@ export const InfluencerProfile = () => {
   const [draftText, setDraftText] = useState("");
   const [draftRating, setDraftRating] = useState(0);
   const [busy, setBusy] = useState(false);
+
+  // follow state
+  const [following, setFollowing] = useState(false);
+  const [followers, setFollowers] = useState(0);
+  const [followBusy, setFollowBusy] = useState(false);
+  useEffect(() => {
+    if (data) {
+      setFollowing(!!data.is_following);
+      setFollowers(data.followers_count || 0);
+    }
+  }, [data]);
+
+  const toggleFollow = async () => {
+    setFollowBusy(true);
+    try {
+      const res = following
+        ? await api.del(`/users/${id}/follow`)
+        : await api.post(`/users/${id}/follow`, {});
+      setFollowing(res.is_following);
+      setFollowers(res.followers_count);
+    } catch (e) { showToast(e.message, "danger"); }
+    finally { setFollowBusy(false); }
+  };
 
   const showToast = (text, variant = "success") => {
     setToast({ text, variant });
@@ -185,10 +208,22 @@ export const InfluencerProfile = () => {
                 </div>
                 {data.username && <div className="text-secondary mb-2">@{data.username}</div>}
                 {data.bio && <p className="text-light mb-2">{data.bio}</p>}
-                <div className="d-flex flex-wrap gap-3 small text-secondary">
+                <div className="d-flex flex-wrap align-items-center gap-3 small text-secondary mb-2">
+                  <span><FiUsers className="me-1" />{followers} follower{followers === 1 ? "" : "s"}</span>
                   {data.homebase && <span><FiMapPin className="me-1" />{data.homebase}</span>}
                   {data.professional_email && <span><FiMail className="me-1" />{data.professional_email}</span>}
                 </div>
+                {!isSelf && (
+                  <Button
+                    size="sm"
+                    className={following ? "" : "sq-grad-btn"}
+                    variant={following ? "outline-light" : undefined}
+                    onClick={toggleFollow}
+                    disabled={followBusy}
+                  >
+                    {following ? <><FiUserCheck className="me-1" /> Following</> : <><FiUserPlus className="me-1" /> Follow</>}
+                  </Button>
+                )}
               </Col>
             </Row>
           </Card.Body>

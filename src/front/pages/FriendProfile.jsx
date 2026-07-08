@@ -26,67 +26,39 @@ import {
   FiTrash2,
   FiClock,
   FiMessageSquare,
+  FiStar,
 } from "react-icons/fi";
 
 // =============================================================
 // INLINE API HELPERS
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
+import { api } from "../services/api";
 
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
 
 const apiGetUserProfile = (userId) =>
-  fetch(`${API}/api/profile/${userId}`, { headers: authHeaders() }).then(handle);
+  api.get(`/profile/${userId}`);
 
 const apiSendRequest = (payload) =>
-  fetch(`${API}/api/friends/requests`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
-  }).then(handle);
+  api.post(`/friends/requests`, payload);
 
 const apiAcceptRequest = (id) =>
-  fetch(`${API}/api/friends/requests/${id}/accept`, {
-    method: "PUT",
-    headers: authHeaders(),
-  }).then(handle);
+  api.put(`/friends/requests/${id}/accept`);
 
 const apiRefuseRequest = (id) =>
-  fetch(`${API}/api/friends/requests/${id}/refuse`, {
-    method: "PUT",
-    headers: authHeaders(),
-  }).then(handle);
+  api.put(`/friends/requests/${id}/refuse`);
 
 const apiCancelRequest = (id) =>
-  fetch(`${API}/api/friends/requests/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  }).then(handle);
+  api.del(`/friends/requests/${id}`);
 
 const apiUnfriend = (userId) =>
-  fetch(`${API}/api/friends/${userId}`, {
-    method: "DELETE",
-    headers: authHeaders(),
-  }).then(handle);
+  api.del(`/friends/${userId}`);
 
 // Create a DM with this user, or return the existing one. The backend
 // (/chat/dm) is idempotent: it returns the existing room if there is one,
 // or creates a new room otherwise. Either way we get back room.id.
 const apiCreateOrGetDm = (userId) =>
-  fetch(`${API}/api/chat/dm`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ user_id: userId }),
-  }).then(handle);
+  api.post(`/chat/dm`, { user_id: userId });
 
 // =============================================================
 // INLINE STYLES (reuses Friends page palette)
@@ -426,6 +398,35 @@ export const FriendProfile = () => {
                     <h1 className="text-light mb-1">{fullName(profile)}</h1>
                     {profile.username && (
                       <div className="text-secondary mb-2">@{profile.username}</div>
+                    )}
+
+                    {/* Premium cosmetics — visible to friends/viewers. */}
+                    {(profile.is_pro || profile.is_premium || (profile.premium_coins || 0) > 0) && (
+                      <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
+                        {profile.is_pro && (
+                          <Badge bg="warning" text="dark">
+                            <FiStar style={{ verticalAlign: "-2px" }} /> Pro
+                          </Badge>
+                        )}
+                        {profile.is_premium && (
+                          <Badge bg="warning" text="dark">
+                            <FiStar style={{ verticalAlign: "-2px" }} /> Premium
+                          </Badge>
+                        )}
+                        {(profile.premium_coins || 0) > 0 && (
+                          <span
+                            title="Premium coins"
+                            style={{
+                              display: "inline-flex", alignItems: "center", gap: "0.25rem",
+                              fontWeight: 700, color: "#f5d678",
+                              background: "#1c1708", border: "1px solid #4a3a1f",
+                              borderRadius: "999px", padding: "0.1rem 0.55rem", fontSize: "0.85rem",
+                            }}
+                          >
+                            <FiStar style={{ color: "#f5b301" }} /> {profile.premium_coins}
+                          </span>
+                        )}
+                      </div>
                     )}
                     {profile.bio && (
                       <p className="text-light mb-3">{profile.bio}</p>

@@ -4,6 +4,7 @@ import os
 # Pipfile sin usar). Se configura sola desde la env var CLOUDINARY_URL.
 import cloudinary
 import cloudinary.uploader
+import secrets
 
 from flask import Blueprint, request, jsonify, redirect, current_app
 from flask_cors import CORS
@@ -19,7 +20,10 @@ from sqlalchemy import text, bindparam, or_
 from api.models import (
     db, User, Event, Friendship, ChatRoom, ChatMessage,
     Notification, EventInvitation, InviteSuggestion,
-    ChatRoomMembership, event_participants,
+    ChatRoomMembership, event_participants, Business,
+    BusinessPost, Review, EventOpinion, Follow,
+    Subscription, FREE_FRIEND_CAP, PREMIUM_FRIEND_CAP,
+    TeamMembership, TeamInvite, TEAM_ROLES,
 )
 # Tanda 7F — Socket.IO: instancia global + helpers (ver api/sockets.py).
 from api.sockets import socketio, emit_to_user, allowed_origins
@@ -557,13 +561,14 @@ def _get_friend_ids(user_id):
     return ids
 
 
-# =========================================================
-# HELLO
-# =========================================================
-
-@api.route('/hello', methods=['GET'])
-def handle_hello():
-    return jsonify({"message": "Hello! I'm a message that came from the backend"}), 200
+def _accepted_friend_count(user_id):
+    """How many accepted friends `user_id` currently has. Used to enforce
+    the friend cap (free persons: 150; premium persons: 1000)."""
+    return Friendship.query.filter(
+        Friendship.status == "accepted",
+        (Friendship.requester_id == user_id) | (
+            Friendship.addressee_id == user_id),
+    ).count()
 
 
 # =========================================================
@@ -583,6 +588,23 @@ def register():
     email = (body.get("email") or "").strip().lower() or None
     username = (body.get("username") or "").strip() or None
     password = body.get("password")
+
+    # 3-button chooser: person (default) | business | influencer.
+    account_type = (body.get("account_type") or "person").strip().lower()
+    if account_type not in ("person", "business", "influencer"):
+        return jsonify({"msg": "Invalid account_type"}), 400
+
+    # Influencer-only optional fields.
+    homebase = (body.get("homebase") or "").strip() or None
+    professional_email = (body.get("professional_email") or "").strip().lower() or None
+
+    # Business: the owner's first business is created together with the
+    # account. `business` is an object; only `name` is required here, the
+    # richer fields (location, hours, picture, posts) are filled in later.
+    business_payload = body.get("business") or {}
+    business_name = (business_payload.get("name") or "").strip() or None
+    if account_type == "business" and not business_name:
+        return jsonify({"msg": "A business name is required to register a company"}), 400
 
     if not email or not password or not username:
         return jsonify({"msg": "Email, username and password are required"}), 400
@@ -611,9 +633,31 @@ def register():
         is_active=True,
         # Tanda 7E — nace sin verificar; se confirma con el link del email.
         email_verified=False,
+        account_type=account_type,
+        # Only meaningful for influencers; harmless NULLs otherwise.
+        homebase=homebase if account_type == "influencer" else None,
+        professional_email=professional_email if account_type == "influencer" else None,
     )
     db.session.add(new_user)
     db.session.commit()
+
+    # Company accounts get their first Business created right away. The
+    # owner can add more businesses later (one owner → many businesses).
+    business = None
+    if account_type == "business":
+        business = Business(
+            owner_id=new_user.id,
+            name=business_name,
+            category=(business_payload.get("category") or "").strip() or None,
+            location=(business_payload.get("location") or "").strip() or None,
+            latitude=business_payload.get("latitude"),
+            longitude=business_payload.get("longitude"),
+            description=(business_payload.get("description") or "").strip() or None,
+            hours=business_payload.get("hours") or {},
+            profile_picture_url=(business_payload.get("profile_picture_url") or "").strip() or None,
+        )
+        db.session.add(business)
+        db.session.commit()
 
     # Tanda 7E — email de confirmación (best-effort: si el SMTP no está
     # configurado o falla, el registro NO se rompe; el front informa).
@@ -629,6 +673,7 @@ def register():
     return jsonify({
         "msg": "User registered successfully",
         "user": new_user.serialize(),
+        "business": business.serialize() if business else None,
         "verification_email_sent": email_sent,
     }), 201
 
@@ -759,7 +804,7 @@ def upload_media():
     body = request.get_json() or {}
     data_url = body.get("data_url")
     kind = body.get("kind") if body.get("kind") in (
-        "profile", "event", "chat", "audio") else "misc"
+        "profile", "event", "chat", "audio", "proof") else "misc"
 
     if not isinstance(data_url, str) or not data_url.startswith("data:"):
         return jsonify({"msg": "data_url (base64 data URL) is required"}), 400
@@ -768,12 +813,17 @@ def upload_media():
     if len(data_url) > 12_000_000:
         return jsonify({"msg": "File too large"}), 413
 
+    # Los PDF (documentos de prueba) se suben como "raw": Cloudinary bloquea
+    # por defecto la ENTREGA de PDFs subidos como imagen, pero los "raw" se
+    # sirven sin restricción → el revisor siempre puede abrir la prueba.
+    # Imagen / audio / vídeo siguen con "auto".
+    is_pdf = data_url[:64].lower().startswith("data:application/pdf")
     try:
         result = cloudinary.uploader.upload(
             data_url,
             folder="sidequest/{}".format(kind),
-            # "auto": acepta imagen y audio/video (notas de voz del chat).
-            resource_type="auto",
+            # "auto": imagen y audio/vídeo (notas de voz del chat).
+            resource_type="raw" if is_pdf else "auto",
         )
     except Exception:
         return jsonify({"msg": "Upload failed"}), 502
@@ -878,21 +928,56 @@ def password_reset_confirm():
 
 
 # =========================================================
-# PRIVATE
-# =========================================================
-
-@api.route('/private', methods=['GET'])
-@jwt_required()
-def private():
-    user = User.query.get(get_jwt_identity())
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
-    return jsonify({"msg": "Private route accessed", "user": user.serialize()}), 200
-
-
-# =========================================================
 # EVENTS
 # =========================================================
+
+def _coerce_event_price(creator, body, business=None):
+    """Resolve an event's ticket price from the request body.
+
+    Only a PRO creator (a business / influencer with an ACTIVE 'pro'
+    subscription) may set a price; for anyone else the field is ignored and
+    the event stays free. Returns (price_or_None, error_tuple_or_None) where
+    error_tuple is a ready-to-return (response, status).
+
+    NOTE: gating is on `is_pro()` (subscription required) on purpose — priced
+    events are the pro monetization hook. To let ANY business/influencer set a
+    price without paying, relax the check to
+    `creator.account_type in ("business", "influencer")`.
+    """
+    if "price" not in body:
+        return None, None
+    raw = body.get("price")
+    if raw in (None, ""):
+        return None, None  # explicitly clearing the price → free event
+    # Pro gate: the actor is pro, OR the event's business is pro (so a team
+    # editor of a Pro company can price its events).
+    if not ((creator and creator.is_pro()) or (business and business.is_pro())):
+        return None, (jsonify({
+            "msg": "Only Pro accounts (subscribed business / influencer) can set a ticket price.",
+            "code": "pro_required",
+        }), 403)
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return None, (jsonify({"msg": "price must be a number"}), 400)
+    if price < 0:
+        return None, (jsonify({"msg": "price cannot be negative"}), 400)
+    return price, None
+
+
+def _coerce_duration_min(value):
+    """Event duration in minutes: a positive int, or None (unknown).
+
+    Not pro-gated — any creator may set it. Feeds the company hub's
+    "events at your place" window (see _events_at_place)."""
+    if value in (None, ""):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
 
 @api.route('/events', methods=['POST'])
 @jwt_required()
@@ -906,6 +991,19 @@ def create_event():
 
     creator = db.session.get(User, current_user_id)
 
+    # Pro-only ticket price (ignored / rejected for non-pro creators).
+    biz = db.session.get(Business, body.get("business_id")) if body.get("business_id") else None
+    # Phase 5b — solo owner/manager/editor del business pueden crear un event
+    # atado a ese business (antes no se verificaba → cualquiera podía atarlo).
+    if biz and _business_role(current_user_id, biz) not in ("owner", "manager", "editor"):
+        return jsonify({
+            "msg": "You can't create events for this business.",
+            "code": "forbidden",
+        }), 403
+    price, price_err = _coerce_event_price(creator, body, biz)
+    if price_err:
+        return price_err
+
     is_public = bool(body.get("is_public", False))
 
     event = Event(
@@ -917,8 +1015,17 @@ def create_event():
         longitude=body.get("longitude"),
         details=body.get("details"),
         image=body.get("image"),
+        price=price,
+        # Optional event duration in minutes (not pro-gated).
+        duration_min=_coerce_duration_min(body.get("duration_min")),
         is_public=is_public,
         creator_id=current_user_id,
+        # Pro-only private team briefing (ignored for non-pro creators).
+        team_note=(body.get("team_note") if (creator and creator.is_pro()) else None),
+        # Optional: ties the event to a business so it shows in that
+        # business's "events" carousel (set when created from a place page
+        # by its owner).
+        business_id=body.get("business_id"),
     )
     event.participants.append(creator)
     db.session.add(event)
@@ -1057,8 +1164,14 @@ def update_event(event_id):
     event = db.session.get(Event, event_id)
     if not event:
         return jsonify({"msg": "Event not found"}), 404
-    if event.creator_id != current_user_id:
-        return jsonify({"msg": "Only the creator can edit this event"}), 403
+    # Phase 5b — creator OR a team member with editor+ role on the event's
+    # business may edit; viewers and outsiders cannot.
+    editor_user = db.session.get(User, current_user_id)
+    if not _can_edit_event(editor_user, event):
+        return jsonify({
+            "msg": "You don't have permission to edit this event.",
+            "code": "forbidden",
+        }), 403
 
     body = request.get_json() or {}
 
@@ -1076,6 +1189,28 @@ def update_event(event_id):
     for field in editable:
         if field in body:
             setattr(event, field, body[field])
+
+    # Pro-only ticket price (kept out of `editable` because it's gated: only
+    # a subscribed business / influencer may set it). Passing price=null/""
+    # clears it back to a free event.
+    if "price" in body:
+        editor = db.session.get(User, current_user_id)
+        ev_biz = db.session.get(Business, event.business_id) if event.business_id else None
+        price, price_err = _coerce_event_price(editor, body, ev_biz)
+        if price_err:
+            return price_err
+        event.price = price
+
+    # Pro-only private team note (briefing). Same gating as price.
+    if "team_note" in body:
+        editor = db.session.get(User, current_user_id)
+        ev_biz = db.session.get(Business, event.business_id) if event.business_id else None
+        if (editor and editor.is_pro()) or (ev_biz and ev_biz.is_pro()):
+            event.team_note = (body.get("team_note") or None)
+
+    # Event duration (minutes) — not pro-gated; any creator may set/clear it.
+    if "duration_min" in body:
+        event.duration_min = _coerce_duration_min(body.get("duration_min"))
 
     # Handle the public/private toggle. When an event is switched from private
     # to public we auto-invite any friends who aren't already participants or
@@ -1311,103 +1446,6 @@ def respond_event(event_id):
     return jsonify({"msg": "No pending invitation and not a participant"}), 404
 
 
-# ---------- RSVP (legacy, participants only) ----------
-@api.route('/events/<int:event_id>/rsvp', methods=['PATCH'])
-@jwt_required()
-def rsvp_event(event_id):
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-
-    if current_user_id not in [p.id for p in event.participants]:
-        return jsonify({"msg": "You are not a participant of this event"}), 403
-
-    body = request.get_json() or {}
-    rsvp = body.get("rsvp")
-    if rsvp not in ("going", "maybe", "not_going"):
-        return jsonify({"msg": "rsvp must be one of: going, maybe, not_going"}), 400
-
-    # IDEMPOTENCIA: mismo patrón que respond_event — sin esto, click
-    # repetido en el mismo botón crea N notifs duplicadas.
-    previous_row = db.session.execute(
-        text(
-            "SELECT rsvp FROM event_participants "
-            "WHERE event_id = :eid AND user_id = :uid"),
-        {"eid": event_id, "uid": current_user_id},
-    ).first()
-    previous_rsvp = previous_row[0] if previous_row else None
-
-    db.session.execute(
-        text("UPDATE event_participants SET rsvp = :r WHERE event_id = :eid AND user_id = :uid"),
-        {"r": rsvp, "eid": event_id, "uid": current_user_id},
-    )
-    responder = db.session.get(User, current_user_id)
-    if previous_rsvp != rsvp:
-        _notify_rsvp_changed(event, responder, rsvp)
-    db.session.commit()
-    if previous_rsvp != rsvp:
-        _emit_event_ping(event, "rsvp")
-    return jsonify({
-        "msg": "RSVP updated" if previous_rsvp != rsvp else "RSVP unchanged",
-        "event": event.serialize(current_user_id=current_user_id),
-    }), 200
-
-
-# ---------- ACCEPT / REFUSE (legacy aliases of /respond) ----------
-@api.route('/events/<int:event_id>/accept', methods=['PUT'])
-@jwt_required()
-def accept_event_invitation(event_id):
-    """Legacy: same as POSTing { response: 'going' } to /respond."""
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-
-    inv = EventInvitation.query.filter_by(
-        event_id=event_id, user_id=current_user_id).first()
-    if not inv:
-        return jsonify({"msg": "No pending invitation for this event"}), 404
-
-    user = db.session.get(User, current_user_id)
-    if user not in event.participants:
-        event.participants.append(user)
-    db.session.delete(inv)
-    _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
-    db.session.flush()
-    db.session.execute(
-        text("UPDATE event_participants SET rsvp = 'going' WHERE event_id = :eid AND user_id = :uid"),
-        {"eid": event_id, "uid": current_user_id},
-    )
-    _notify_rsvp_changed(event, user, "going")
-    db.session.commit()
-    _emit_event_ping(event, "rsvp")
-    return jsonify({"msg": "Invitation accepted", "event": event.serialize(current_user_id=current_user_id)}), 200
-
-
-@api.route('/events/<int:event_id>/refuse', methods=['PUT'])
-@jwt_required()
-def refuse_event_invitation(event_id):
-    """Legacy: same as POSTing { response: 'not_going' } to /respond."""
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-
-    inv = EventInvitation.query.filter_by(
-        event_id=event_id, user_id=current_user_id).first()
-    if not inv:
-        return jsonify({"msg": "No pending invitation for this event"}), 404
-
-    responder = db.session.get(User, current_user_id)
-    db.session.delete(inv)
-    _mark_event_invite_notifications_read(event_id, user_id=current_user_id)
-    _notify_rsvp_changed(event, responder, "not_going")
-    db.session.commit()
-    _emit_event_ping(event, "rsvp")
-    return jsonify({"msg": "Invitation refused"}), 200
-
-
 # ---------- LEAVE EVENT ----------
 # Caller leaves the event (drops out of participants + the event chat).
 # Same effect as DELETE /events/<id>/participants/<self_id> but easier to call.
@@ -1444,43 +1482,73 @@ def delete_event(event_id):
     event = db.session.get(Event, event_id)
     if not event:
         return jsonify({"msg": "Event not found"}), 404
-    if event.creator_id != current_user_id:
-        return jsonify({"msg": "Only the creator can delete this event"}), 403
+
+    user = db.session.get(User, current_user_id)
+    biz = db.session.get(Business, event.business_id) if event.business_id else None
+    role = _business_role(current_user_id, biz) if biz else None
+    is_creator = event.creator_id == current_user_id
+
+    # Who may TRIGGER a delete at all?
+    if biz:
+        if not (is_creator or role in ("owner", "manager", "editor")):
+            return jsonify({"msg": "You don't have permission to delete this event.",
+                            "code": "forbidden"}), 403
+    else:
+        # Non-business event → only the creator (unchanged behaviour).
+        if not is_creator:
+            return jsonify({"msg": "Only the creator can delete this event"}), 403
 
     # Tanda 7B/7C — Past events are history: they can NEVER be deleted.
-    # The creator answers the event_confirmation notification instead
-    # (PUT /events/<id>/confirm). Events marked as NOT happened
-    # (happened == False) disappear from the UI (get_events filters
-    # them out) but stay in the database as a "created but cancelled"
-    # record — useful data for later.
     if _event_is_past(event):
         return jsonify({
             "msg": "Past events cannot be deleted. Please confirm whether "
                    "the event took place from your notifications instead."
         }), 409
 
-    # Tanda 7F2 — capturar la audiencia ANTES de vaciar participantes y
-    # borrar la fila: después ya no se puede calcular.
+    # Phase 5b — double confirmation for COMPANY events:
+    #   owner / manager  → delete directly (their role IS the 2nd confirmation).
+    #   editor / non-manager creator → create a pending deletion request that a
+    #   manager/owner must approve (POST /events/<id>/deletion/approve).
+    direct = (biz is None) or (role in ("owner", "manager"))
+    if not direct:
+        event.pending_delete_by = current_user_id
+        event.pending_delete_at = datetime.utcnow()
+        db.session.commit()
+        _notify_business_managers(biz, "event_delete_requested", payload_extra={
+            "event_id": event.id,
+            "event_title": event.title,
+            "from_user_id": current_user_id,
+            "from_username": user.username if user else None,
+        })
+        return jsonify({
+            "msg": "Deletion requested. A manager must approve it before the event is removed.",
+            "code": "pending_approval",
+            "event": event.serialize(current_user_id=current_user_id, include_team=True),
+        }), 202
+
+    return _perform_event_deletion(event, current_user_id)
+
+
+def _perform_event_deletion(event, actor_id):
+    """Tear an event down and notify everyone. Shared by the direct delete
+    (owner/manager / non-business creator) and the approval path."""
+    event_id = event.id
+    # Tanda 7F2 — capture the audience BEFORE clearing participants / deleting.
     audience = _event_audience_ids(event)
+    actor = db.session.get(User, actor_id)
 
-    creator = db.session.get(User, current_user_id)
-
-    # Notify participants BEFORE deletion — once the event row is gone we
-    # lose access to event.title/.participants and the notif payload would
-    # be empty.
+    # Notify participants BEFORE deletion — once the row is gone the payload
+    # would be empty.
     _notify_event_participants(
         event, "event_cancelled",
         payload_extra={
-            "from_user_id": current_user_id,
-            "from_username":   creator.username if creator else None,
+            "from_user_id": actor_id,
+            "from_username": actor.username if actor else None,
         },
     )
 
     _delete_event_invite_notifications(event_id)
     _delete_invite_suggestion_notifications(event_id)
-    # Drop dangling lifecycle notifs for this event so the bell doesn't
-    # keep linking to a now-404 event. event_cancelled created above stays
-    # (it doesn't reference the event row in the payload beyond id+title).
     _delete_event_payload_notifications(
         event_id,
         types=("event_updated", "event_removed",
@@ -2075,6 +2143,16 @@ def send_friend_request():
 
     me = db.session.get(User, current_user_id)
 
+    # Friend cap: a user who is already full can't take on new friends.
+    # Checked at send time so we never create a request that could never be
+    # accepted. Premium persons (and business/influencer) have a higher cap.
+    if _accepted_friend_count(current_user_id) >= me.friend_cap():
+        return jsonify({
+            "msg": "You've reached your friend limit of {}. Upgrade to premium to add more friends.".format(me.friend_cap()),
+            "code": "friend_cap_reached",
+            "cap": me.friend_cap(),
+        }), 403
+
     if existing:
         if existing.status == "accepted":
             return jsonify({
@@ -2131,6 +2209,23 @@ def accept_friend_request(request_id):
         return jsonify({"msg": "Only the addressee can accept this request"}), 403
     if friendship.status != "pending":
         return jsonify({"msg": f"Request is already {friendship.status}"}), 409
+
+    # Friend cap on BOTH sides — accepting turns them into friends, so each
+    # must have room. Either side may have filled up since the request was
+    # sent. Premium persons (and business/influencer) get the higher cap.
+    accepter = db.session.get(User, current_user_id)
+    if _accepted_friend_count(current_user_id) >= accepter.friend_cap():
+        return jsonify({
+            "msg": "You've reached your friend limit of {}. Upgrade to premium to add more friends.".format(accepter.friend_cap()),
+            "code": "friend_cap_reached",
+            "cap": accepter.friend_cap(),
+        }), 403
+    requester = db.session.get(User, friendship.requester_id)
+    if requester and _accepted_friend_count(requester.id) >= requester.friend_cap():
+        return jsonify({
+            "msg": "{} has reached their friend limit, so this request can't be accepted right now.".format(requester.username or "This user"),
+            "code": "friend_cap_reached_other",
+        }), 409
 
     friendship.status = "accepted"
     _mark_friend_request_notifications_read(friendship.id, status="accepted")
@@ -2426,6 +2521,11 @@ def get_user_profile(user_id):
         "city":                user.city,
         "bio":                 user.bio,
         "profile_picture_url": user.profile_picture_url,
+        # Premium cosmetics are public (the point is friends see your coins).
+        "account_type":        user.account_type or "person",
+        "premium_coins":       user.premium_coins or 0,
+        "is_premium":          user.is_premium(),
+        "is_pro":              user.is_pro(),
         "created_at":          user.created_at.isoformat() + "Z" if user.created_at else None,
     }
     if is_self:
@@ -2704,67 +2804,6 @@ def delete_room_message(room_id, msg_id):
     return jsonify({"msg": "Message deleted", "message": msg.serialize()}), 200
 
 
-# ---------- LEGACY: event chat shortcuts ----------
-
-@api.route('/events/<int:event_id>/chat/messages', methods=['GET'])
-@jwt_required()
-def list_event_messages(event_id):
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-    if current_user_id not in [p.id for p in event.participants]:
-        return jsonify({"msg": "Not a participant of this event"}), 403
-
-    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
-    if not room:
-        room = ChatRoom(type="event", event_id=event_id)
-        db.session.add(room)
-        db.session.commit()
-
-    messages = ChatMessage.query.filter_by(
-        room_id=room.id).order_by(ChatMessage.created_at).all()
-    return jsonify({"room_id": room.id, "messages": [m.serialize() for m in messages]}), 200
-
-
-@api.route('/events/<int:event_id>/chat/messages', methods=['POST'])
-@jwt_required()
-def post_event_message(event_id):
-    current_user_id = int(get_jwt_identity())
-    event = db.session.get(Event, event_id)
-    if not event:
-        return jsonify({"msg": "Event not found"}), 404
-    if current_user_id not in [p.id for p in event.participants]:
-        return jsonify({"msg": "Not a participant of this event"}), 403
-
-    body = request.get_json() or {}
-    text_v = (body.get("text") or "").strip() or None
-    media_url = body.get("media_url") or None
-    media_type = body.get("media_type") or None
-
-    if not text_v and not media_url:
-        return jsonify({"msg": "text or media_url is required"}), 400
-    if media_url and media_type not in ("image", "audio"):
-        return jsonify({"msg": "media_type must be 'image' or 'audio' when media_url is set"}), 400
-
-    room = ChatRoom.query.filter_by(type="event", event_id=event_id).first()
-    if not room:
-        room = ChatRoom(type="event", event_id=event_id)
-        db.session.add(room)
-        db.session.flush()
-
-    msg = ChatMessage(
-        room_id=room.id, sender_id=current_user_id,
-        text=text_v, media_url=media_url, media_type=media_type,
-    )
-    db.session.add(msg)
-    membership = _get_or_create_membership(room.id, current_user_id)
-    membership.last_read_at = datetime.utcnow()
-    db.session.commit()
-    _emit_chat_ping(room)
-    return jsonify({"msg": "Message sent", "message": msg.serialize()}), 201
-
-
 # =========================================================
 # NOTIFICATIONS
 # =========================================================
@@ -2853,3 +2892,1215 @@ def delete_notification(notif_id):
     db.session.delete(n)
     db.session.commit()
     return jsonify({"msg": "Notification deleted"}), 200
+
+
+# =========================================================
+# BUSINESS PROFILES  (Stage 2)
+# =========================================================
+# A Business is owned by a User (account_type == 'business'). One owner
+# can manage several businesses. Viewing requires a session (same as
+# /profile/<id>); editing / posting is restricted to the owner; reviews
+# can be left by any logged-in user except the owner.
+
+def _get_owned_business_or_403(business_id, current_user_id):
+    """Return (business, None) if current user owns it, else (None, error_response)."""
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return None, (jsonify({"msg": "Business not found"}), 404)
+    if biz.owner_id != current_user_id:
+        return None, (jsonify({"msg": "Not your business"}), 403)
+    return biz, None
+
+
+@api.route('/businesses/mine', methods=['GET'])
+@jwt_required()
+def list_my_businesses():
+    """All businesses owned by the current user (powers the switcher)."""
+    current_user_id = int(get_jwt_identity())
+    rows = Business.query.filter_by(owner_id=current_user_id)\
+        .order_by(Business.created_at.asc()).all()
+    return jsonify([b.serialize() for b in rows]), 200
+
+
+@api.route('/businesses', methods=['POST'])
+@jwt_required()
+def create_business():
+    """Create an additional business. Promotes a 'person' account to
+    'business' on first creation (an influencer keeps its type)."""
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    body = request.get_json() or {}
+    name = (body.get("name") or "").strip() or None
+    if not name:
+        return jsonify({"msg": "Business name is required"}), 400
+
+    biz = Business(
+        owner_id=current_user_id,
+        name=name,
+        category=(body.get("category") or "").strip() or None,
+        location=(body.get("location") or "").strip() or None,
+        latitude=body.get("latitude"),
+        longitude=body.get("longitude"),
+        description=(body.get("description") or "").strip() or None,
+        hours=body.get("hours") or {},
+        profile_picture_url=(body.get("profile_picture_url") or "").strip() or None,
+        # Proof document (registration cert, ID…). Owner pays per company, so
+        # each one submits a proof and stays unverified until reviewed.
+        proof_url=(body.get("proof_url") or "").strip() or None,
+    )
+    if user.account_type == "person":
+        user.account_type = "business"
+    db.session.add(biz)
+    db.session.commit()
+    return jsonify({"msg": "Business created", "business": biz.serialize()}), 201
+
+
+@api.route('/business/<int:business_id>', methods=['GET'])
+@jwt_required()
+def get_business(business_id):
+    """Full public business profile + feed (posts, events, reviews)."""
+    current_user_id = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+
+    data = biz.serialize(include_feed=True, current_user_id=current_user_id)
+    data["is_owner"] = (biz.owner_id == current_user_id)
+    # The current user's own review, if any (so the UI can prefill the form).
+    my_review = next(
+        (r for r in (biz.reviews or []) if r.author_id == current_user_id), None)
+    data["my_review"] = my_review.serialize() if my_review else None
+    # For the owner: the list of all businesses they manage, powering the
+    # dropdown profile-switcher (wireframe: business name ▼ → business 1/2).
+    if data["is_owner"]:
+        owned = Business.query.filter_by(owner_id=current_user_id)\
+            .order_by(Business.created_at.asc()).all()
+        data["my_businesses"] = [{"id": b.id, "name": b.name} for b in owned]
+    # Follow stats.
+    data["followers_count"] = Follow.query.filter_by(business_id=biz.id).count()
+    data["is_following"] = Follow.query.filter_by(
+        follower_id=current_user_id, business_id=biz.id).first() is not None
+    return jsonify(data), 200
+
+
+@api.route('/business/<int:business_id>', methods=['PUT'])
+@jwt_required()
+def update_business(business_id):
+    current_user_id = int(get_jwt_identity())
+    biz, err = _get_owned_business_or_403(business_id, current_user_id)
+    if err:
+        return err
+
+    body = request.get_json() or {}
+    str_fields = ["name", "category", "location", "description", "profile_picture_url"]
+    for field in str_fields:
+        if field in body:
+            value = body[field]
+            # name can never be blanked out
+            if field == "name" and not (value or "").strip():
+                continue
+            setattr(biz, field, (value or "").strip() or None)
+    for field in ["latitude", "longitude"]:
+        if field in body:
+            setattr(biz, field, body[field])
+    if "hours" in body and isinstance(body["hours"], dict):
+        biz.hours = body["hours"]
+
+    db.session.commit()
+    return jsonify({"msg": "Business updated", "business": biz.serialize()}), 200
+
+
+@api.route('/business/<int:business_id>', methods=['DELETE'])
+@jwt_required()
+def delete_business(business_id):
+    current_user_id = int(get_jwt_identity())
+    biz, err = _get_owned_business_or_403(business_id, current_user_id)
+    if err:
+        return err
+    # Detach events so deleting a business never deletes shared events.
+    for ev in list(biz.events):
+        ev.business_id = None
+    db.session.delete(biz)
+    db.session.commit()
+    return jsonify({"msg": "Business deleted"}), 200
+
+
+# ── POSTS (feed) ──────────────────────────────────────────
+@api.route('/business/<int:business_id>/posts', methods=['POST'])
+@jwt_required()
+def create_business_post(business_id):
+    current_user_id = int(get_jwt_identity())
+    biz, err = _get_owned_business_or_403(business_id, current_user_id)
+    if err:
+        return err
+
+    body = request.get_json() or {}
+    text = (body.get("text") or "").strip() or None
+    image = (body.get("image") or "").strip() or None
+    if not text and not image:
+        return jsonify({"msg": "A post needs text or an image"}), 400
+
+    post = BusinessPost(business_id=biz.id, text=text, image=image)
+    db.session.add(post)
+    db.session.commit()
+    return jsonify({"msg": "Post created", "post": post.serialize()}), 201
+
+
+@api.route('/business/<int:business_id>/posts/<int:post_id>', methods=['DELETE'])
+@jwt_required()
+def delete_business_post(business_id, post_id):
+    current_user_id = int(get_jwt_identity())
+    biz, err = _get_owned_business_or_403(business_id, current_user_id)
+    if err:
+        return err
+    post = db.session.get(BusinessPost, post_id)
+    if not post or post.business_id != biz.id:
+        return jsonify({"msg": "Post not found"}), 404
+    db.session.delete(post)
+    db.session.commit()
+    return jsonify({"msg": "Post deleted"}), 200
+
+
+# ── REVIEWS (drive the rating) ────────────────────────────
+@api.route('/business/<int:business_id>/reviews', methods=['POST'])
+@jwt_required()
+def upsert_business_review(business_id):
+    """Create or update the current user's review (one per business)."""
+    current_user_id = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    if biz.owner_id == current_user_id:
+        return jsonify({"msg": "You can't review your own business"}), 403
+
+    body = request.get_json() or {}
+    rating = body.get("rating")
+    try:
+        rating = int(rating)
+    except (TypeError, ValueError):
+        return jsonify({"msg": "rating must be an integer 1-5"}), 400
+    if rating < 1 or rating > 5:
+        return jsonify({"msg": "rating must be between 1 and 5"}), 400
+    text = (body.get("text") or "").strip() or None
+
+    review = Review.query.filter_by(
+        business_id=biz.id, author_id=current_user_id).first()
+    if review:
+        review.rating = rating
+        review.text = text
+        msg = "Review updated"
+    else:
+        review = Review(business_id=biz.id, author_id=current_user_id,
+                        rating=rating, text=text)
+        db.session.add(review)
+        msg = "Review added"
+    db.session.commit()
+    return jsonify({
+        "msg": msg,
+        "review": review.serialize(),
+        "rating": biz.rating(),
+        "reviews_count": len(biz.reviews or []),
+    }), 200
+
+
+@api.route('/business/<int:business_id>/reviews/<int:review_id>', methods=['DELETE'])
+@jwt_required()
+def delete_business_review(business_id, review_id):
+    current_user_id = int(get_jwt_identity())
+    review = db.session.get(Review, review_id)
+    if not review or review.business_id != business_id:
+        return jsonify({"msg": "Review not found"}), 404
+    # Author can delete their own review; owner can moderate reviews.
+    biz = db.session.get(Business, business_id)
+    is_owner = bool(biz and biz.owner_id == current_user_id)
+    if review.author_id != current_user_id and not is_owner:
+        return jsonify({"msg": "Not allowed"}), 403
+    db.session.delete(review)
+    db.session.commit()
+    return jsonify({"msg": "Review deleted", "rating": biz.rating() if biz else None}), 200
+
+
+# =========================================================
+# INFLUENCER PROFILES  (Stage 3)
+# =========================================================
+# An influencer is a User with account_type == 'influencer'. The public
+# page shows: picture, homebase, @username, name, professional email, and
+# "Places went" — the events they attended, each with their own opinion
+# (the card's "Details" becomes "@username's opinion").
+
+@api.route('/influencer/<int:user_id>', methods=['GET'])
+@jwt_required()
+def get_influencer(user_id):
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+    if (user.account_type or "person") != "influencer":
+        return jsonify({"msg": "This user is not an influencer"}), 404
+
+    # Places went = events this influencer participates in.
+    events = Event.query.filter(Event.participants.any(id=user_id))\
+        .order_by(Event.date.desc()).all()
+
+    # Their opinions, keyed by event_id (one per event).
+    opinions = {
+        o.event_id: o
+        for o in EventOpinion.query.filter_by(author_id=user_id).all()
+    }
+
+    places_went = []
+    for ev in events:
+        ev_data = ev.serialize(current_user_id=current_user_id)
+        op = opinions.get(ev.id)
+        ev_data["opinion"] = op.serialize() if op else None
+        places_went.append(ev_data)
+
+    return jsonify({
+        "id":                  user.id,
+        "username":            user.username,
+        "first_name":          user.first_name,
+        "last_name":           user.last_name,
+        "profile_picture_url": user.profile_picture_url,
+        "homebase":            user.homebase,
+        "professional_email":  user.professional_email,
+        "bio":                 user.bio,
+        "account_type":        user.account_type,
+        "is_self":             (user_id == current_user_id),
+        "followers_count":     Follow.query.filter_by(target_user_id=user_id).count(),
+        "is_following":        Follow.query.filter_by(
+            follower_id=current_user_id, target_user_id=user_id).first() is not None,
+        "places_went":         places_went,
+        "places_count":        len(places_went),
+    }), 200
+
+
+# ── OPINIONS (influencer's take on an event they attended) ──
+@api.route('/events/<int:event_id>/opinion', methods=['POST'])
+@jwt_required()
+def upsert_event_opinion(event_id):
+    """Create/update the current user's opinion on an event. Only allowed
+    if they actually attended (are a participant)."""
+    current_user_id = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    if not any(p.id == current_user_id for p in event.participants):
+        return jsonify({"msg": "You can only give an opinion on an event you attended"}), 403
+
+    body = request.get_json() or {}
+    text = (body.get("text") or "").strip() or None
+    rating = body.get("rating")
+    if rating is not None:
+        try:
+            rating = int(rating)
+        except (TypeError, ValueError):
+            return jsonify({"msg": "rating must be an integer 1-5"}), 400
+        if rating < 1 or rating > 5:
+            return jsonify({"msg": "rating must be between 1 and 5"}), 400
+    if not text and rating is None:
+        return jsonify({"msg": "An opinion needs text or a rating"}), 400
+
+    op = EventOpinion.query.filter_by(
+        author_id=current_user_id, event_id=event_id).first()
+    if op:
+        op.text = text
+        op.rating = rating
+        msg = "Opinion updated"
+    else:
+        op = EventOpinion(author_id=current_user_id, event_id=event_id,
+                          text=text, rating=rating)
+        db.session.add(op)
+        msg = "Opinion added"
+    db.session.commit()
+    return jsonify({"msg": msg, "opinion": op.serialize()}), 200
+
+
+@api.route('/events/<int:event_id>/opinion', methods=['DELETE'])
+@jwt_required()
+def delete_event_opinion(event_id):
+    current_user_id = int(get_jwt_identity())
+    op = EventOpinion.query.filter_by(
+        author_id=current_user_id, event_id=event_id).first()
+    if not op:
+        return jsonify({"msg": "Opinion not found"}), 404
+    db.session.delete(op)
+    db.session.commit()
+    return jsonify({"msg": "Opinion deleted"}), 200
+
+
+# =========================================================
+# DISCOVER — CREATORS  (internal search)
+# =========================================================
+# Unified search over the three creator kinds:
+#   - place      → a Business         → link /business/<id>
+#   - influencer → influencer User    → link /influencer/<user_id>
+#   - owner      → business owner User → link to their first business
+# Query params: q (text), type (all|place|influencer|owner).
+
+@api.route('/discover/creators', methods=['GET'])
+@jwt_required()
+def discover_creators():
+    q = (request.args.get("q") or "").strip()
+    kind = request.args.get("type") or "all"
+    if kind not in ("all", "place", "influencer", "owner"):
+        kind = "all"
+    like = "%{}%".format(q) if q else None
+
+    results = []
+
+    # ── places (businesses) ──
+    if kind in ("all", "place"):
+        bq = Business.query
+        if like:
+            bq = bq.filter(Business.name.ilike(like))
+        for b in bq.order_by(Business.name.asc()).limit(20).all():
+            results.append({
+                "kind":     "place",
+                "id":       b.id,
+                "title":    b.name,
+                "subtitle": b.category or "Business",
+                "picture":  b.profile_picture_url,
+                "rating":   b.rating(),
+                "link":     "/business/{}".format(b.id),
+            })
+
+    # ── influencers ──
+    if kind in ("all", "influencer"):
+        iq = User.query.filter(User.account_type == "influencer")
+        if like:
+            iq = iq.filter(or_(
+                User.username.ilike(like),
+                User.first_name.ilike(like),
+                User.last_name.ilike(like),
+            ))
+        for u in iq.order_by(User.username.asc()).limit(20).all():
+            name = " ".join(filter(None, [u.first_name, u.last_name])).strip()
+            results.append({
+                "kind":     "influencer",
+                "id":       u.id,
+                "title":    "@{}".format(u.username) if u.username else (name or "Influencer"),
+                "subtitle": name or (u.homebase or "Influencer"),
+                "picture":  u.profile_picture_url,
+                "link":     "/influencer/{}".format(u.id),
+            })
+
+    # ── owners (link to their first business) ──
+    if kind in ("all", "owner"):
+        oq = User.query.filter(User.account_type == "business")
+        if like:
+            oq = oq.filter(User.username.ilike(like))
+        for u in oq.order_by(User.username.asc()).limit(20).all():
+            owned = Business.query.filter_by(owner_id=u.id)\
+                .order_by(Business.created_at.asc()).all()
+            if not owned:
+                continue  # an owner with no businesses isn't reachable
+            results.append({
+                "kind":      "owner",
+                "id":        u.id,
+                "title":     "@{}".format(u.username) if u.username else "Owner",
+                "subtitle":  "{} business{}".format(
+                    len(owned), "" if len(owned) == 1 else "es"),
+                "picture":   u.profile_picture_url,  # owner's OWN avatar, not the business pic
+                "businesses": [{"id": b.id, "name": b.name} for b in owned],
+                "link":      "/business/{}".format(owned[0].id),
+            })
+
+    return jsonify({"results": results, "count": len(results)}), 200
+
+
+# =========================================================
+# FOLLOWS  (Stage 5)
+# =========================================================
+# Users (and owners) follow businesses and influencers. Follows are
+# one-directional; businesses/influencers have followers, not friends.
+
+@api.route('/business/<int:business_id>/follow', methods=['POST'])
+@jwt_required()
+def follow_business(business_id):
+    current_user_id = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    existing = Follow.query.filter_by(
+        follower_id=current_user_id, business_id=business_id).first()
+    if not existing:
+        db.session.add(Follow(follower_id=current_user_id, business_id=business_id))
+        db.session.commit()
+    return jsonify({
+        "msg": "Following",
+        "is_following": True,
+        "followers_count": Follow.query.filter_by(business_id=business_id).count(),
+    }), 200
+
+
+@api.route('/business/<int:business_id>/follow', methods=['DELETE'])
+@jwt_required()
+def unfollow_business(business_id):
+    current_user_id = int(get_jwt_identity())
+    existing = Follow.query.filter_by(
+        follower_id=current_user_id, business_id=business_id).first()
+    if existing:
+        db.session.delete(existing)
+        db.session.commit()
+    return jsonify({
+        "msg": "Unfollowed",
+        "is_following": False,
+        "followers_count": Follow.query.filter_by(business_id=business_id).count(),
+    }), 200
+
+
+@api.route('/users/<int:user_id>/follow', methods=['POST'])
+@jwt_required()
+def follow_user(user_id):
+    """Follow an influencer or owner (their account)."""
+    current_user_id = int(get_jwt_identity())
+    if user_id == current_user_id:
+        return jsonify({"msg": "You can't follow yourself"}), 400
+    target = db.session.get(User, user_id)
+    if not target:
+        return jsonify({"msg": "User not found"}), 404
+    if (target.account_type or "person") not in ("influencer", "business"):
+        return jsonify({"msg": "This account can't be followed"}), 400
+    existing = Follow.query.filter_by(
+        follower_id=current_user_id, target_user_id=user_id).first()
+    if not existing:
+        db.session.add(Follow(follower_id=current_user_id, target_user_id=user_id))
+        db.session.commit()
+    return jsonify({
+        "msg": "Following",
+        "is_following": True,
+        "followers_count": Follow.query.filter_by(target_user_id=user_id).count(),
+    }), 200
+
+
+@api.route('/users/<int:user_id>/follow', methods=['DELETE'])
+@jwt_required()
+def unfollow_user(user_id):
+    current_user_id = int(get_jwt_identity())
+    existing = Follow.query.filter_by(
+        follower_id=current_user_id, target_user_id=user_id).first()
+    if existing:
+        db.session.delete(existing)
+        db.session.commit()
+    return jsonify({
+        "msg": "Unfollowed",
+        "is_following": False,
+        "followers_count": Follow.query.filter_by(target_user_id=user_id).count(),
+    }), 200
+
+
+@api.route('/businesses/following', methods=['GET'])
+@jwt_required()
+def list_followed_businesses():
+    """Businesses the current user follows — used to drop persistent pins
+    on the map. Only those with coordinates are useful for pins, but all
+    are returned so the client can decide."""
+    current_user_id = int(get_jwt_identity())
+    follows = Follow.query.filter(
+        Follow.follower_id == current_user_id,
+        Follow.business_id.isnot(None),
+    ).all()
+    out = []
+    for f in follows:
+        b = f.business
+        if not b:
+            continue
+        out.append({
+            "id":                  b.id,
+            "name":                b.name,
+            "category":            b.category,
+            "latitude":            b.latitude,
+            "longitude":           b.longitude,
+            "profile_picture_url": b.profile_picture_url,
+        })
+    return jsonify(out), 200
+
+
+# ════════════════════════════════════════════════════════════════
+# SUBSCRIPTIONS (Phase 3) — provider-agnostic.
+#
+# Payment provider is intentionally NOT chosen yet. These endpoints model
+# the lifecycle so the rest of the app (priced events, premium coins,
+# friend-cap uplift) can be built and exercised now. When a provider is
+# wired in:
+#   • /subscriptions/activate becomes "create a checkout session" and is
+#     no longer what flips the status — the provider WEBHOOK is the single
+#     source of truth for status / current_period_end.
+#   • /subscriptions/webhook verifies the signature and applies the event.
+# Until then, the 'stub' provider activates locally without a real charge.
+# ════════════════════════════════════════════════════════════════
+
+# Which plan each account_type is allowed to buy.
+#   person                → 'premium' (consumer perks)
+#   business / influencer → 'pro'     (professional features)
+def _allowed_plan_for(account_type):
+    if account_type in ("business", "influencer"):
+        return "pro"
+    return "premium"
+
+
+@api.route('/subscriptions/me', methods=['GET'])
+@jwt_required()
+def get_my_subscription():
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+    personal = user.personal_subscription()
+    data = {
+        "subscription": personal.serialize() if personal else None,
+        "is_pro":       user.is_pro(),
+        "is_premium":   user.is_premium(),
+        "allowed_plan": _allowed_plan_for(user.account_type),
+    }
+    # Business owners pay Pro PER COMPANY — expose each company's pro status.
+    if user.account_type == "business":
+        data["businesses"] = [
+            {"id": b.id, "name": b.name, "is_pro": b.is_pro(), "verified": bool(b.verified)}
+            for b in (user.businesses or [])
+        ]
+    return jsonify(data), 200
+
+
+@api.route('/subscriptions/activate', methods=['POST'])
+@jwt_required()
+def activate_subscription():
+    """DEV / STUB checkout: marks a subscription active for 30 days with
+    provider='stub' and NO real charge, so the whole premium flow is testable
+    before a provider is chosen. In production this becomes "create checkout
+    session" and the provider webhook flips the status.
+
+    Body: {plan, business_id?}.
+      • person      → plan 'premium', user-level sub.
+      • influencer  → plan 'pro',     user-level sub.
+      • business    → plan 'pro' PER COMPANY → business_id REQUIRED.
+    """
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    body = request.get_json() or {}
+    allowed = _allowed_plan_for(user.account_type)
+    plan = (body.get("plan") or allowed).strip().lower()
+    if plan != allowed:
+        return jsonify({
+            "msg": "Your account type ({}) can only subscribe to the '{}' plan.".format(
+                user.account_type or "person", allowed),
+            "code": "plan_not_allowed",
+        }), 400
+
+    if user.account_type == "business":
+        # Pro is per-company: the owner must say WHICH company to activate.
+        business_id = body.get("business_id")
+        if not business_id:
+            return jsonify({
+                "msg": "Select which company to upgrade (business_id is required).",
+                "code": "business_id_required",
+            }), 400
+        biz = db.session.get(Business, int(business_id))
+        if not biz or biz.owner_id != user.id:
+            return jsonify({"msg": "Business not found or not yours."}), 404
+        sub = biz.subscription
+        if sub is None:
+            sub = Subscription(user_id=user.id, business_id=biz.id)
+            db.session.add(sub)
+    else:
+        # person (premium) / influencer (pro): a single user-level sub.
+        sub = user.personal_subscription()
+        if sub is None:
+            sub = Subscription(user_id=user.id)  # business_id stays NULL
+            db.session.add(sub)
+
+    sub.plan = plan
+    sub.status = "active"
+    sub.provider = "stub"
+    sub.current_period_end = datetime.utcnow() + timedelta(days=30)
+    db.session.commit()
+
+    return jsonify({
+        "msg":          "Subscription activated (stub — no charge).",
+        "subscription": sub.serialize(),
+        "user":         user.serialize(),
+    }), 200
+
+
+@api.route('/subscriptions/cancel', methods=['POST'])
+@jwt_required()
+def cancel_subscription():
+    """Cancel a subscription. Body {business_id?}: with business_id cancels
+    that company's Pro; without it cancels the user-level sub. Immediate with
+    the stub; with a real provider you'd cancel at period end via webhook."""
+    current_user_id = int(get_jwt_identity())
+    user = db.session.get(User, current_user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    body = request.get_json() or {}
+    business_id = body.get("business_id")
+    if business_id:
+        biz = db.session.get(Business, int(business_id))
+        if not biz or biz.owner_id != user.id:
+            return jsonify({"msg": "Business not found or not yours."}), 404
+        sub = biz.subscription
+    else:
+        sub = user.personal_subscription()
+
+    if not sub:
+        return jsonify({"msg": "No active subscription"}), 404
+
+    sub.status = "canceled"
+    db.session.commit()
+    return jsonify({
+        "msg":          "Subscription canceled.",
+        "subscription": sub.serialize(),
+        "user":         user.serialize(),
+    }), 200
+
+
+@api.route('/subscriptions/webhook', methods=['POST'])
+def subscriptions_webhook():
+    """Placeholder for the future payment-provider webhook (Stripe / Paddle /
+    Lemon Squeezy). NOT authenticated with JWT — a real provider authenticates
+    by signature instead, which MUST be verified here before trusting the body.
+
+    No provider is wired yet, so this only acknowledges receipt. When one is:
+      1. verify the signature,
+      2. map the event to a Subscription (by provider_subscription_id),
+      3. update status / current_period_end — this is the source of truth.
+    """
+    # TODO: verify provider signature before trusting any of this.
+    return jsonify({"received": True, "handled": False}), 200
+
+
+# ════════════════════════════════════════════════════════════════
+# FRIEND SUGGESTIONS (Phase 3) — "closest people".
+#
+# Users have no stored lat/lng (only a free-text `city`), so proximity is
+# approximated by SAME CITY for now. To make this true-geo later, add
+# latitude/longitude to User and switch the filter to a haversine/radius
+# query (same shape as discover's _internal_discover_events).
+# ════════════════════════════════════════════════════════════════
+@api.route('/friends/suggestions', methods=['GET'])
+@jwt_required()
+def friend_suggestions():
+    current_user_id = int(get_jwt_identity())
+    me = db.session.get(User, current_user_id)
+    if not me:
+        return jsonify({"msg": "User not found"}), 404
+
+    try:
+        limit = int(request.args.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 50))
+
+    # Exclude self + anyone already in a friendship/request (any status).
+    related = Friendship.query.filter(
+        (Friendship.requester_id == current_user_id) |
+        (Friendship.addressee_id == current_user_id)
+    ).all()
+    exclude_ids = {current_user_id}
+    for f in related:
+        exclude_ids.add(f.addressee_id if f.requester_id == current_user_id else f.requester_id)
+
+    # "Closest people" ≈ same city (persons only). Fall back to recent
+    # persons when the user hasn't set a city, so the list is never empty.
+    base = User.query.filter(
+        User.account_type == "person",
+        User.id.notin_(exclude_ids),
+    )
+    if me.city:
+        base = base.filter(User.city == me.city)
+    candidates = base.order_by(User.created_at.desc()).limit(limit).all()
+
+    friend_count = _accepted_friend_count(current_user_id)
+    cap = me.friend_cap()
+    return jsonify({
+        "suggestions":  [u.public_brief() for u in candidates],
+        "basis":        "city" if me.city else "recent",
+        "city":         me.city,
+        "friend_count": friend_count,
+        "friend_cap":   cap,
+        "cap_reached":  friend_count >= cap,
+    }), 200
+
+
+# ════════════════════════════════════════════════════════════════
+# COMPANY MANAGEMENT (Phase 5a) — the pro "hub" backend.
+# Only business / influencer accounts. Business owners manage per company
+# (Event.business_id); influencers manage their own events (creator_id).
+# Team roles / invitations come in Phase 5b.
+# ════════════════════════════════════════════════════════════════
+
+# "A regular user could arrive from 30 min before until the event ends."
+# Events have no END time, so we approximate the window with a default
+# duration. Tune here (or add a real end-time/duration to Event later).
+AT_PLACE_EARLY_MIN = 30
+AT_PLACE_DEFAULT_DURATION_MIN = 240  # 4h
+
+
+def _parse_hhmm(value):
+    """'HH:MM' -> minutes since midnight, or None."""
+    if not value or not isinstance(value, str) or ":" not in value:
+        return None
+    try:
+        h, m = value.split(":")[:2]
+        return int(h) * 60 + int(m)
+    except (ValueError, TypeError):
+        return None
+
+
+def _events_at_place(company_event):
+    """How many events PERSON users created 'at your place' around a company
+    event: same normalised location, same date, starting within
+    [event_time − 30min, event_time + 4h]. Excludes the company's own
+    (business-linked) events and counts only person accounts."""
+    if not company_event.location or not company_event.date:
+        return 0
+    loc = company_event.location.strip().lower()
+    base = _parse_hhmm(company_event.time)
+    # Use the event's real duration when set; otherwise the 4h fallback.
+    dur = (company_event.duration_min
+           if (company_event.duration_min and company_event.duration_min > 0)
+           else AT_PLACE_DEFAULT_DURATION_MIN)
+    lo = (base - AT_PLACE_EARLY_MIN) if base is not None else None
+    hi = (base + dur) if base is not None else None
+
+    rows = Event.query.filter(
+        Event.date == company_event.date,
+        Event.business_id.is_(None),      # user events only (not company events)
+        Event.id != company_event.id,
+    ).all()
+    count = 0
+    for e in rows:
+        if (e.location or "").strip().lower() != loc:
+            continue
+        creator = e.creator
+        if not creator or creator.account_type != "person":
+            continue
+        if lo is not None:
+            m = _parse_hhmm(e.time)
+            if m is None or not (lo <= m <= hi):
+                continue
+        count += 1
+    return count
+
+
+@api.route('/manage/scope', methods=['GET'])
+@jwt_required()
+def manage_scope():
+    """What the current user can manage:
+      - businesses they OWN, plus
+      - businesses where they are a TEAM MEMBER (any role), plus
+      - their own events if they're an influencer.
+    Each business carries the user's role so the frontend can adapt."""
+    user = db.session.get(User, int(get_jwt_identity()))
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    # Owned + member businesses, deduped, with the user's role.
+    biz_by_id = {}
+    for b in (user.businesses or []):
+        biz_by_id[b.id] = (b, "owner")
+    for m in TeamMembership.query.filter_by(user_id=user.id).all():
+        if m.business_id in biz_by_id:
+            continue
+        b = db.session.get(Business, m.business_id)
+        if b:
+            biz_by_id[b.id] = (b, m.role)
+
+    businesses = [
+        {"id": b.id, "name": b.name, "is_pro": b.is_pro(),
+         "verified": bool(b.verified), "role": role}
+        for (b, role) in biz_by_id.values()
+    ]
+
+    if businesses:
+        return jsonify({"type": "business", "businesses": businesses}), 200
+    if user.account_type == "influencer":
+        return jsonify({"type": "influencer"}), 200
+    return jsonify({
+        "msg": "Management is only for business / influencer accounts.",
+        "code": "not_pro_account",
+    }), 403
+
+
+@api.route('/manage/events', methods=['GET'])
+@jwt_required()
+def manage_events():
+    """Events for the management hub, enriched per CompanyEventCard:
+    price, team_note, at_place_count, reviews_count.
+      - ?business_id= → that company's events; caller must be owner/member.
+      - no business_id → influencer's own events.
+    """
+    user = db.session.get(User, int(get_jwt_identity()))
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    business_id = request.args.get("business_id", type=int)
+    q = Event.query
+    if business_id:
+        biz = db.session.get(Business, business_id)
+        if not biz:
+            return jsonify({"msg": "Business not found."}), 404
+        if _business_role(user.id, biz) is None:
+            return jsonify({"msg": "You are not part of this company's team.",
+                            "code": "forbidden"}), 403
+        q = q.filter(Event.business_id == business_id)
+    elif user.account_type == "influencer":
+        q = q.filter(Event.creator_id == user.id)
+    else:
+        return jsonify({"msg": "business_id is required.",
+                        "code": "business_id_required"}), 400
+
+    events = q.order_by(Event.date.desc(), Event.time.desc()).all()
+    out = []
+    for e in events:
+        d = e.serialize(current_user_id=user.id, include_team=True)
+        d["at_place_count"] = _events_at_place(e)
+        d["reviews_count"] = EventOpinion.query.filter_by(event_id=e.id).count()
+        out.append(d)
+    return jsonify({"events": out}), 200
+
+
+# =========================================================
+# TEAM & ROLES (Phase 5b)
+# =========================================================
+# Roles: owner > manager > editor > viewer. The OWNER is derived from
+# Business.owner_id (no TeamMembership row). `can_manage_managers` is the
+# owner-granted authorization that lets a manager manage other managers too.
+
+def _business_role(user_id, business):
+    """User's role for a business: 'owner' | 'manager' | 'editor' | 'viewer'
+    | None (not a member)."""
+    if not business:
+        return None
+    if business.owner_id == user_id:
+        return "owner"
+    m = TeamMembership.query.filter_by(business_id=business.id, user_id=user_id).first()
+    return m.role if m else None
+
+
+def _can_edit_event(user, event):
+    """Creator OR a team member with editor+ role on the event's business."""
+    if not user or not event:
+        return False
+    if event.creator_id == user.id:
+        return True
+    if event.business_id:
+        role = _business_role(user.id, db.session.get(Business, event.business_id))
+        return role in ("owner", "manager", "editor")
+    return False
+
+
+def _actor_can_manage_managers(actor_id, business, actor_role):
+    """Owner always; a manager only if granted the co-management authorization."""
+    if actor_role == "owner":
+        return True
+    m = TeamMembership.query.filter_by(business_id=business.id, user_id=actor_id).first()
+    return bool(m and m.role == "manager" and m.can_manage_managers)
+
+
+def _notify_business_managers(business, notif_type, payload_extra=None):
+    """Notify the owner + every manager of a business."""
+    if not business:
+        return
+    ids = {business.owner_id}
+    for m in TeamMembership.query.filter_by(business_id=business.id, role="manager").all():
+        ids.add(m.user_id)
+    for uid in ids:
+        _create_notification(user_id=uid, notif_type=notif_type, payload=payload_extra or {})
+
+
+@api.route('/businesses/<int:business_id>/team', methods=['GET'])
+@jwt_required()
+def list_team(business_id):
+    """List the team (owner synthesized + memberships). Members see the roster;
+    owner/manager also see pending invites (with tokens)."""
+    uid = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    role = _business_role(uid, biz)
+    if role is None:
+        return jsonify({"msg": "You are not part of this team.", "code": "forbidden"}), 403
+
+    owner = db.session.get(User, biz.owner_id)
+    members = [{
+        "user_id": biz.owner_id,
+        "username": owner.username if owner else None,
+        "profile_picture_url": owner.profile_picture_url if owner else None,
+        "role": "owner",
+        "can_manage_managers": True,
+    }]
+    for m in TeamMembership.query.filter_by(business_id=business_id).all():
+        members.append(m.serialize())
+
+    out = {"business_id": business_id, "my_role": role, "members": members}
+    if role in ("owner", "manager"):
+        invites = TeamInvite.query.filter_by(business_id=business_id, status="pending").all()
+        out["pending_invites"] = [i.serialize(include_token=True) for i in invites]
+    return jsonify(out), 200
+
+
+@api.route('/businesses/<int:business_id>/team/invites', methods=['POST'])
+@jwt_required()
+def create_team_invite(business_id):
+    """Create a single-use invite. Body: {role, email?, username?}.
+    email/username set → targeted (must match on accept); neither → open link.
+    Owner/manager only. Returns the invite + accept URL (+ token)."""
+    uid = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    if _business_role(uid, biz) not in ("owner", "manager"):
+        return jsonify({"msg": "Only owner/manager can invite.", "code": "forbidden"}), 403
+
+    body = request.get_json() or {}
+    role = body.get("role")
+    if role not in TEAM_ROLES:
+        return jsonify({"msg": "role must be one of: manager, editor, viewer"}), 400
+
+    # lstrip("@") por si el front manda "@usuario" (seguridad extra).
+    email = (body.get("email") or "").strip().lower().lstrip("@") or None
+    username = (body.get("username") or "").strip().lstrip("@") or None
+
+    # Resolver el destinatario (si lo hay) ANTES de crear, para deduplicar.
+    target = None
+    if username:
+        target = User.query.filter_by(username=username).first()
+    elif email:
+        target = User.query.filter(User.email == email).first()
+
+    # Dedup de invitaciones DIRIGIDas (los enlaces abiertos sí pueden ser varios,
+    # cada uno de un solo uso):
+    if target:
+        if target.id == biz.owner_id:
+            return jsonify({"msg": "This user is the owner of the company.",
+                            "code": "already_owner"}), 409
+        if TeamMembership.query.filter_by(business_id=business_id, user_id=target.id).first():
+            return jsonify({"msg": "This user is already in the team.",
+                            "code": "already_member"}), 409
+    if email or username:
+        dup = TeamInvite.query.filter_by(business_id=business_id, status="pending")
+        dup = dup.filter(TeamInvite.invited_username == username) if username \
+            else dup.filter(TeamInvite.email == email)
+        if dup.first():
+            return jsonify({"msg": "An invite is already pending for this user.",
+                            "code": "already_invited"}), 409
+
+    inv = TeamInvite(
+        business_id=business_id, role=role,
+        token=secrets.token_urlsafe(24),
+        email=email, invited_username=username,
+        status="pending", created_by=uid,
+        expires_at=datetime.utcnow() + timedelta(days=7),
+    )
+    db.session.add(inv)
+    db.session.commit()
+
+    # If targeted to a known user, ping them in-app.
+    if target:
+        _create_notification(user_id=target.id, notif_type="team_invite", payload={
+            "business_id": business_id, "business_name": biz.name,
+            "role": role, "token": inv.token, "from_user_id": uid,
+        })
+
+    data = inv.serialize(include_token=True)
+    data["accept_url"] = "{}/team/invite/{}".format(frontend_base_url(), inv.token)
+    return jsonify({"invite": data}), 201
+
+
+@api.route('/team/invites/<token>', methods=['GET'])
+@jwt_required()
+def preview_team_invite(token):
+    """Preview an invite (company + role) before accepting."""
+    inv = TeamInvite.query.filter_by(token=token).first()
+    if not inv:
+        return jsonify({"msg": "Invite not found"}), 404
+    biz = db.session.get(Business, inv.business_id)
+    valid = inv.status == "pending" and (
+        inv.expires_at is None or inv.expires_at > datetime.utcnow())
+    return jsonify({
+        "business_id": inv.business_id,
+        "business_name": biz.name if biz else None,
+        "role": inv.role,
+        "status": inv.status,
+        "targeted": bool(inv.email or inv.invited_username),
+        "valid": valid,
+    }), 200
+
+
+@api.route('/team/invites/<token>/accept', methods=['POST'])
+@jwt_required()
+def accept_team_invite(token):
+    """Join the team with the invite's role (single-use)."""
+    uid = int(get_jwt_identity())
+    user = db.session.get(User, uid)
+    inv = TeamInvite.query.filter_by(token=token).first()
+    if not inv:
+        return jsonify({"msg": "Invite not found"}), 404
+    if inv.status != "pending":
+        return jsonify({"msg": "This invite is no longer valid.", "code": "invalid_invite"}), 409
+    if inv.expires_at and inv.expires_at < datetime.utcnow():
+        inv.status = "expired"
+        db.session.commit()
+        return jsonify({"msg": "This invite has expired.", "code": "expired"}), 409
+
+    biz = db.session.get(Business, inv.business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    if biz.owner_id == uid:
+        return jsonify({"msg": "You own this company.", "code": "already_owner"}), 409
+
+    # Targeted invites must match the accepting user.
+    if inv.invited_username and inv.invited_username != user.username:
+        return jsonify({"msg": "This invite is for another user.", "code": "wrong_user"}), 403
+    if inv.email and inv.email != (user.email or "").lower():
+        return jsonify({"msg": "This invite is for another email.", "code": "wrong_email"}), 403
+
+    m = TeamMembership.query.filter_by(business_id=biz.id, user_id=uid).first()
+    if m:
+        m.role = inv.role
+    else:
+        m = TeamMembership(business_id=biz.id, user_id=uid, role=inv.role)
+        db.session.add(m)
+    inv.status = "accepted"
+    inv.accepted_by = uid
+    db.session.commit()
+
+    _create_notification(user_id=biz.owner_id, notif_type="team_member_joined", payload={
+        "business_id": biz.id, "business_name": biz.name,
+        "user_id": uid, "username": user.username, "role": inv.role,
+    })
+    return jsonify({"msg": "You joined the team.", "membership": m.serialize()}), 200
+
+
+@api.route('/businesses/<int:business_id>/team/<int:user_id>', methods=['PUT'])
+@jwt_required()
+def update_team_member(business_id, user_id):
+    """Change a member's role and/or (owner only) the co-management flag."""
+    actor_id = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    if user_id == biz.owner_id:
+        return jsonify({"msg": "The owner cannot be modified.", "code": "forbidden"}), 403
+    actor_role = _business_role(actor_id, biz)
+    if actor_role not in ("owner", "manager"):
+        return jsonify({"msg": "Only owner/manager can manage the team.", "code": "forbidden"}), 403
+
+    m = TeamMembership.query.filter_by(business_id=business_id, user_id=user_id).first()
+    if not m:
+        return jsonify({"msg": "Member not found"}), 404
+
+    body = request.get_json() or {}
+
+    # Touching a MANAGER requires owner or an authorized (co-manager) manager.
+    if m.role == "manager" and not _actor_can_manage_managers(actor_id, biz, actor_role):
+        return jsonify({
+            "msg": "Only the owner (or an authorized manager) can manage managers.",
+            "code": "forbidden",
+        }), 403
+
+    new_role = body.get("role")
+    if new_role is not None:
+        if new_role not in TEAM_ROLES:
+            return jsonify({"msg": "role must be one of: manager, editor, viewer"}), 400
+        m.role = new_role
+
+    # Granting/revoking co-management is OWNER-only.
+    if "can_manage_managers" in body:
+        if actor_role != "owner":
+            return jsonify({"msg": "Only the owner can grant co-management.", "code": "forbidden"}), 403
+        m.can_manage_managers = bool(body["can_manage_managers"])
+
+    db.session.commit()
+    return jsonify({"membership": m.serialize()}), 200
+
+
+@api.route('/businesses/<int:business_id>/team/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def remove_team_member(business_id, user_id):
+    """Remove a member. Owner/manager; removing a manager needs owner/co-manager."""
+    actor_id = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    if user_id == biz.owner_id:
+        return jsonify({"msg": "The owner cannot be removed.", "code": "forbidden"}), 403
+    actor_role = _business_role(actor_id, biz)
+    if actor_role not in ("owner", "manager"):
+        return jsonify({"msg": "Only owner/manager can manage the team.", "code": "forbidden"}), 403
+
+    m = TeamMembership.query.filter_by(business_id=business_id, user_id=user_id).first()
+    if not m:
+        return jsonify({"msg": "Member not found"}), 404
+    if m.role == "manager" and not _actor_can_manage_managers(actor_id, biz, actor_role):
+        return jsonify({
+            "msg": "Only the owner (or an authorized manager) can remove a manager.",
+            "code": "forbidden",
+        }), 403
+
+    db.session.delete(m)
+    db.session.commit()
+    return jsonify({"msg": "Member removed"}), 200
+
+
+@api.route('/businesses/<int:business_id>/team/invites/<int:invite_id>', methods=['DELETE'])
+@jwt_required()
+def revoke_team_invite(business_id, invite_id):
+    """Revoke a pending invite. Owner/manager only."""
+    actor_id = int(get_jwt_identity())
+    biz = db.session.get(Business, business_id)
+    if not biz:
+        return jsonify({"msg": "Business not found"}), 404
+    if _business_role(actor_id, biz) not in ("owner", "manager"):
+        return jsonify({"msg": "Only owner/manager can revoke invites.", "code": "forbidden"}), 403
+    inv = db.session.get(TeamInvite, invite_id)
+    if not inv or inv.business_id != business_id:
+        return jsonify({"msg": "Invite not found"}), 404
+    inv.status = "revoked"
+    db.session.commit()
+    return jsonify({"msg": "Invite revoked"}), 200
+
+
+# ── Event deletion approval (Phase 5b double-confirm) ──────
+@api.route('/events/<int:event_id>/deletion/approve', methods=['POST'])
+@jwt_required()
+def approve_event_deletion(event_id):
+    """A manager/owner approves a pending deletion → the event is removed."""
+    uid = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    if not event.pending_delete_by:
+        return jsonify({"msg": "No pending deletion for this event.", "code": "no_request"}), 409
+    biz = db.session.get(Business, event.business_id) if event.business_id else None
+    if _business_role(uid, biz) not in ("owner", "manager"):
+        return jsonify({"msg": "Only a manager/owner can approve a deletion.", "code": "forbidden"}), 403
+    return _perform_event_deletion(event, uid)
+
+
+@api.route('/events/<int:event_id>/deletion/cancel', methods=['POST'])
+@jwt_required()
+def cancel_event_deletion(event_id):
+    """Cancel a pending deletion request (the requester or a manager/owner)."""
+    uid = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    if not event.pending_delete_by:
+        return jsonify({"msg": "No pending deletion for this event.", "code": "no_request"}), 409
+    biz = db.session.get(Business, event.business_id) if event.business_id else None
+    role = _business_role(uid, biz) if biz else None
+    if uid != event.pending_delete_by and role not in ("owner", "manager"):
+        return jsonify({"msg": "You can't cancel this request.", "code": "forbidden"}), 403
+    event.pending_delete_by = None
+    event.pending_delete_at = None
+    db.session.commit()
+    return jsonify({"msg": "Deletion request cancelled."}), 200

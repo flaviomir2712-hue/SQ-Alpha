@@ -8,7 +8,7 @@ import {
 	Alert,
 	Spinner,
 } from "react-bootstrap";
-import { FiMail, FiLock, FiUserPlus, FiAtSign, FiCheckCircle } from "react-icons/fi";
+import { FiMail, FiLock, FiUserPlus, FiAtSign, FiCheckCircle, FiStar, FiBriefcase, FiUser, FiMapPin } from "react-icons/fi";
 import logoSideQuest from "../assets/img/logoSideQuest.png";
 import { ResetPasswordModal } from "../components/ResetPasswordModal";
 
@@ -93,6 +93,30 @@ const AUTH_CSS = `
 	font-size: 0.72rem;
 	margin-top: 0.25rem;
 }
+
+/* ── Account-type chooser ── */
+.sq-acct-chooser { display: flex; gap: 0.5rem; }
+.sq-acct-opt {
+	position: relative;
+	flex: 1;
+	display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+	background: #0f111a; border: 1px solid #2a2f42; border-radius: 12px;
+	color: #adb5bd; padding: 0.7rem 0.4rem 0.55rem;
+	font-size: 0.78rem; font-weight: 600;
+	transition: border-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.sq-acct-opt svg { font-size: 1.05rem; }
+.sq-acct-opt:hover { border-color: #6366f1; color: #e9ecef; }
+.sq-acct-opt.active { border-color: #6366f1; color: #fff; background: #161a2b; }
+.sq-acct-opt.sq-acct-pro.active { border-color: #f5b301; }
+.sq-pro-tag {
+	position: absolute; top: -8px; right: -6px;
+	display: inline-flex; align-items: center; gap: 2px;
+	background: linear-gradient(135deg, #f5b301, #ec4899); color: #1a1320;
+	font-size: 0.6rem; font-weight: 800; letter-spacing: 0.02em;
+	padding: 0.05rem 0.35rem; border-radius: 999px;
+}
+.sq-pro-tag svg { font-size: 0.6rem !important; }
 `;
 
 export const Register = () => {
@@ -107,6 +131,14 @@ export const Register = () => {
 	const [acceptedTerms, setAcceptedTerms] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState("");
+
+	// Account type chooser (Pro ⭐ = professional accounts). Person is the
+	// default; business / influencer can later subscribe to Pro for priced
+	// events etc. (activated after registration).
+	const [accountType, setAccountType] = useState("person");
+	const [businessName, setBusinessName] = useState("");
+	const [homebase, setHomebase] = useState("");
+	const [professionalEmail, setProfessionalEmail] = useState("");
 
 	const handleAcceptTermsChange = (checked) => {
 		setAcceptedTerms(checked);
@@ -133,15 +165,32 @@ export const Register = () => {
 			return;
 		}
 
+		if (accountType === "business" && !businessName.trim()) {
+			setError("Please enter your business name.");
+			return;
+		}
+
 		setLoading(true);
 
 		try {
+			// Build the payload: person stays as the original 3-field body;
+			// business / influencer add their extras (the backend ignores the
+			// ones that don't apply to the chosen account_type).
+			const payload = { email, username, password, account_type: accountType };
+			if (accountType === "business") {
+				payload.business = { name: businessName.trim() };
+			}
+			if (accountType === "influencer") {
+				if (homebase.trim()) payload.homebase = homebase.trim();
+				if (professionalEmail.trim()) payload.professional_email = professionalEmail.trim();
+			}
+
 			const response = await fetch(
 				`${import.meta.env.VITE_BACKEND_URL}/api/register`,
 				{
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ email, username, password }),
+					body: JSON.stringify(payload),
 				}
 			);
 
@@ -210,6 +259,44 @@ export const Register = () => {
 						)}
 
 						<Form onSubmit={handleRegister}>
+							{/* ── Account type chooser ── Person is free; the two
+							    professional accounts are marked Pro ⭐ (they can
+							    subscribe to Pro after signing up). */}
+							<div className="sq-acct-chooser mb-3">
+								<button
+									type="button"
+									className={`sq-acct-opt ${accountType === "person" ? "active" : ""}`}
+									onClick={() => setAccountType("person")}
+								>
+									<FiUser />
+									<span>Person</span>
+								</button>
+								<button
+									type="button"
+									className={`sq-acct-opt sq-acct-pro ${accountType === "business" ? "active" : ""}`}
+									onClick={() => setAccountType("business")}
+								>
+									<span className="sq-pro-tag"><FiStar /> Pro</span>
+									<FiBriefcase />
+									<span>Business</span>
+								</button>
+								<button
+									type="button"
+									className={`sq-acct-opt sq-acct-pro ${accountType === "influencer" ? "active" : ""}`}
+									onClick={() => setAccountType("influencer")}
+								>
+									<span className="sq-pro-tag"><FiStar /> Pro</span>
+									<FiStar />
+									<span>Influencer</span>
+								</button>
+							</div>
+							{accountType !== "person" && (
+								<div className="sq-auth-hint mb-3">
+									<FiStar style={{ verticalAlign: "-1px" }} /> Pro features (like priced
+									events) are activated from your profile after you sign up.
+								</div>
+							)}
+
 							<Form.Group className="mb-3">
 								<Form.Label>
 									<FiMail className="me-2" /> Email
@@ -258,6 +345,48 @@ export const Register = () => {
 									autoComplete="new-password"
 								/>
 							</Form.Group>
+
+							{accountType === "business" && (
+								<Form.Group className="mb-4">
+									<Form.Label>
+										<FiBriefcase className="me-2" /> Business name
+									</Form.Label>
+									<Form.Control
+										type="text"
+										value={businessName}
+										onChange={(e) => setBusinessName(e.target.value)}
+										placeholder="e.g. Café Central"
+										required
+									/>
+								</Form.Group>
+							)}
+
+							{accountType === "influencer" && (
+								<>
+									<Form.Group className="mb-3">
+										<Form.Label>
+											<FiMapPin className="me-2" /> Home base <span className="text-secondary">(optional)</span>
+										</Form.Label>
+										<Form.Control
+											type="text"
+											value={homebase}
+											onChange={(e) => setHomebase(e.target.value)}
+											placeholder="e.g. Luxembourg City"
+										/>
+									</Form.Group>
+									<Form.Group className="mb-4">
+										<Form.Label>
+											<FiMail className="me-2" /> Professional email <span className="text-secondary">(optional)</span>
+										</Form.Label>
+										<Form.Control
+											type="email"
+											value={professionalEmail}
+											onChange={(e) => setProfessionalEmail(e.target.value)}
+											placeholder="booking@yourname.com"
+										/>
+									</Form.Group>
+								</>
+							)}
 
 							<Form.Group className="mb-4">
 								<Form.Check

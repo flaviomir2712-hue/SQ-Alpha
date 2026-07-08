@@ -35,6 +35,8 @@ import {
     FiSend,
     FiUsers,
     FiLogOut,
+    FiBriefcase,
+    FiHeart,
     FiCalendar,
     FiArrowLeft,
     FiSearch,
@@ -532,7 +534,7 @@ const getChatLabel = (room, currentUserId) => {
 
 const getPreviewText = (last) => {
     if (!last) return null;
-    if (last.deleted) return "Mensaje eliminado";
+    if (last.deleted) return "Message deleted";
     if (last.text) return last.text;
     if (last.media_type === "image") return "📷 Photo";
     if (last.media_type === "audio") return "🎤 Audio";
@@ -576,6 +578,28 @@ export const Navbar = () => {
     // ya no vale, el primer 401 limpia la sesión y redirige (api.js).
     const isLogged = !!cachedUser;
     const currentUserId = cachedUser?.id ?? store.user?.id ?? null;
+
+    // Phase 5b — "Manage" se muestra si el usuario puede gestionar algo:
+    // dueño/influencer O miembro de equipo de alguna empresa (un person
+    // invitado). Lo resuelve /manage/scope, no el account_type.
+    const [canManage, setCanManage] = useState(false);
+    useEffect(() => {
+        if (!isLogged) { setCanManage(false); return; }
+        let cancelled = false;
+        fetch(`${API}/api/manage/scope`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+                if (cancelled || !d) return;
+                setCanManage(d.type === "influencer" ||
+                    (Array.isArray(d.businesses) && d.businesses.length > 0));
+            })
+            .catch(() => {});
+        return () => { cancelled = true; };
+        // Re-fetch al navegar (p.ej. justo tras aceptar una invitación) para
+        // que "Manage" aparezca sin recargar.
+    }, [isLogged, location.pathname]);
 
     const [showMessages, setShowMessages] = useState(false);
 
@@ -1146,6 +1170,18 @@ export const Navbar = () => {
                                             <FiUser className="me-2" /> My Profile
                                         </Dropdown.Item>
 
+                                        <Dropdown.Item as={Link} to="/following">
+                                            <FiHeart className="me-2" /> Following
+                                        </Dropdown.Item>
+
+                                        {/* Phase 5a — hub de gestión, solo para
+                                            cuentas business / influencer. */}
+                                        {canManage && (
+                                            <Dropdown.Item as={Link} to="/manage">
+                                                <FiBriefcase className="me-2" /> Manage
+                                            </Dropdown.Item>
+                                        )}
+
                                         {/* Tanda 4C — Replay del onboarding tour.
                                             Dispara un evento custom que el componente
                                             <Onboarding/> (montado en Layout) escucha
@@ -1367,14 +1403,14 @@ export const Navbar = () => {
                                                             className="sq-chat-edit-save"
                                                             onClick={saveEdit}
                                                             disabled={!editText.trim()}
-                                                            title="Guardar"
+                                                            title="Save"
                                                         >
                                                             <FiCheck />
                                                         </Button>
                                                         <Button
                                                             className="sq-chat-edit-cancel"
                                                             onClick={cancelEdit}
-                                                            title="Cancelar"
+                                                            title="Cancel"
                                                         >
                                                             <FiX />
                                                         </Button>
@@ -1383,14 +1419,14 @@ export const Navbar = () => {
                                                     <div className="bubble">
                                                         {isDeleted ? (
                                                             <em style={{ color: "rgba(255,255,255,0.6)" }}>
-                                                                🚫 Mensaje eliminado
+                                                                🚫 Message deleted
                                                             </em>
                                                         ) : (
                                                             <>
                                                                 {hasImage && (
                                                                     <img
                                                                         src={m.media_url}
-                                                                        alt="foto"
+                                                                        alt="photo"
                                                                         className="sq-chat-img"
                                                                     />
                                                                 )}
@@ -1410,13 +1446,13 @@ export const Navbar = () => {
                                                 <div className="meta">
                                                     {new Date(m.created_at).toLocaleString()}
                                                     {m.edited_at && !isDeleted && (
-                                                        <span className="meta-edited">(editado)</span>
+                                                        <span className="meta-edited">(edited)</span>
                                                     )}
                                                     {showEditBtn && (
                                                         <Button
                                                             className="sq-chat-edit-btn"
                                                             onClick={() => beginEdit(m)}
-                                                            title="Editar (15 min)"
+                                                            title="Edit (15 min)"
                                                         >
                                                             <FiEdit2 />
                                                         </Button>
@@ -1455,9 +1491,9 @@ export const Navbar = () => {
                                 <Form.Control
                                     placeholder={
                                         isRecording
-                                            ? "Grabando audio..."
+                                            ? "Recording audio..."
                                             : editingMsgId
-                                            ? "Editando un mensaje..."
+                                            ? "Editing a message..."
                                             : "Write a message..."
                                     }
                                     value={replyText}
@@ -1603,12 +1639,12 @@ const FriendCard = ({ friend, onOpen, onStartDm }) => {
                             {label}
                         </span>
                         <span className="sq-chat-type-badge">
-                            {room ? "Abrir DM" : "Nuevo DM"}
+                            {room ? "Open DM" : "New DM"}
                         </span>
                     </div>
                 </div>
                 <div className="sq-chat-card-preview">
-                    {room ? "Conversacion existente" : "Iniciar conversacion 1 a 1"}
+                    {room ? "Existing conversation" : "Start a 1-to-1 conversation"}
                 </div>
             </div>
         </div>

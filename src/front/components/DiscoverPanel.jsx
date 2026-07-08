@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button, Form, Spinner, Badge } from "react-bootstrap";
 import {
   FiCompass, FiX, FiSearch, FiMapPin, FiCalendar,
-  FiExternalLink, FiPlus, FiNavigation,
+  FiExternalLink, FiPlus, FiNavigation, FiStar, FiBriefcase,
 } from "react-icons/fi";
 
 import { api } from "../services/api";
+// Onboarding interactivo — señal "buscó en Discover" (near me / city).
+import { announceTourAction, TOUR_ACTIONS } from "../services/tour";
 
 // ════════════════════════════════════════════════════════════════
 // DiscoverPanel — Tanda 7X
@@ -69,6 +72,29 @@ const PANEL_CSS = `
 }
 body.sq-discover-open .sq-bottom-nav { display: none; }
 
+/* ── Page variant — embedded in the full /discover page (not over the map) ── */
+.sq-discover-panel.as-page {
+  position: static;
+  inset: auto;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  height: auto;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+          backdrop-filter: none;
+}
+@media (max-width: 575.98px) {
+  .sq-discover-panel.as-page {
+    position: static;
+    top: auto;
+    border-radius: 0;
+  }
+}
+
 /* ── Header ── */
 .sq-discover-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -107,6 +133,15 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
 }
 .sq-discover-filters .form-control::placeholder { color: #6c757d; }
 
+/* Mini-labels above the date-range / price inputs (so touch users can
+   tell From / To / Price apart — native date inputs show no placeholder). */
+.sq-discover-field { display: flex; flex-direction: column; min-width: 0; }
+.sq-discover-minilabel {
+  font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; color: #8a93a5; margin-bottom: 0.15rem;
+  padding-left: 0.1rem;
+}
+
 /* ── Mode toggle: Near me / City ── */
 .sq-discover-mode {
   display: flex; gap: 0.35rem; margin-bottom: 0.55rem;
@@ -137,6 +172,37 @@ body.sq-discover-open .sq-bottom-nav { display: none; }
 .sq-discover-results { flex: 1; overflow-y: auto; padding: 0.6rem 0.8rem 0.8rem; }
 .sq-discover-results::-webkit-scrollbar { width: 0; }
 .sq-discover-results { scrollbar-width: none; }
+/* Events / Creators view toggle + creator cards (dark) */
+.sq-discover-view { display: flex; gap: 6px; margin-bottom: 0.6rem; }
+.sq-discover-view button {
+  flex: 1; padding: 6px 8px; border-radius: 8px; border: 1px solid #262a36;
+  background: #0f111a; color: #adb5bd; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+}
+.sq-discover-view button.active { background: rgba(99,102,241,0.18); border-color: #6366f1; color: #fff; }
+.sq-discover-creators-search .form-control {
+  background-color: #0f111a; color: #e9ecef; border-color: #2a2f42;
+}
+.sq-discover-creators-search .form-control::placeholder { color: #6c757d; }
+.sq-creator-card {
+  display: flex; align-items: center; gap: 0.6rem;
+  background: #161922; border: 1px solid #262a36; border-radius: 12px;
+  padding: 0.6rem 0.7rem; margin-bottom: 0.5rem; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.sq-creator-card:hover { border-color: #3a3f55; background: #1a1e29; }
+.sq-creator-avatar, .sq-creator-avatar-fallback {
+  width: 42px; height: 42px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+  border: 1px solid #262a36; background: #0f111a;
+  display: flex; align-items: center; justify-content: center; color: #6366f1;
+}
+.sq-creator-body { flex: 1; min-width: 0; }
+.sq-creator-title { color: #fff; font-weight: 600; font-size: 0.9rem; }
+.sq-creator-sub { color: #8a93a5; font-size: 0.78rem; }
+.sq-creator-kind {
+  flex-shrink: 0; font-size: 0.66rem; font-weight: 700; text-transform: uppercase;
+  color: #adb5bd; background: #0f111a; border: 1px solid #262a36;
+  border-radius: 999px; padding: 2px 8px;
+}
 
 /* ── Event card — matches EventModal panel/card surfaces ── */
 .sq-discover-card {
@@ -249,6 +315,7 @@ export const DiscoverPanel = ({
   userCenter,          // [lat, lng] | null — GPS que ya gestiona Mapview
   onPreview,           // (ev) => void — el mapa hace flyTo + marcador
   onCreateFrom,        // (ev) => void — abre EventModal pre-rellenado
+  variant = "overlay", // "overlay" (sobre el mapa) | "page" (full /discover)
 }) => {
   const [mode, setMode] = useState(userCenter ? "near" : "city");
   const [city, setCity] = useState("");
@@ -270,6 +337,17 @@ export const DiscoverPanel = ({
   const [error, setError] = useState(null);
   const didAutoSearchRef = useRef(false);
 
+  // Creators view — recupera el acceso a los perfiles públicos de
+  // business / influencer (que se había ido al quitar el toggle).
+  const navigate = useNavigate();
+  const [view, setView] = useState("events");            // "events" | "creators"
+  const [creatorQ, setCreatorQ] = useState("");
+  const [creatorKind, setCreatorKind] = useState("all"); // all | place | influencer
+  const [creatorResults, setCreatorResults] = useState([]);
+  const [creatorLoading, setCreatorLoading] = useState(false);
+  const [creatorSearched, setCreatorSearched] = useState(false);
+  const creatorDebounceRef = useRef(null);
+
   // Tanda 7X2 — cachés de geocodificación (una llamada a Nominatim por
   // ciudad/posición, no una por búsqueda).
   const cityGeoCacheRef = useRef({});
@@ -278,10 +356,10 @@ export const DiscoverPanel = ({
   // Tanda 7X2 — mientras el panel está abierto, ocultamos la pill nav
   // (mismo patrón que body.modal-open de los modales Bootstrap).
   useEffect(() => {
-    if (!show) return;
+    if (!show || variant !== "overlay") return;
     document.body.classList.add("sq-discover-open");
     return () => document.body.classList.remove("sq-discover-open");
-  }, [show]);
+  }, [show, variant]);
 
   const resolveGeo = async () => {
     if (mode === "city") {
@@ -351,6 +429,10 @@ export const DiscoverPanel = ({
       setResults((prev) => (pageN === 0 ? list : [...prev, ...list]));
       setTotal(data.total || list.length);
       setPage(pageN);
+      // Onboarding: una búsqueda lograda en cada modo cumple su paso del tour.
+      announceTourAction(
+        mode === "near" ? TOUR_ACTIONS.DISCOVER_NEAR : TOUR_ACTIONS.DISCOVER_TRIP
+      );
     } catch (e) {
       setError(e.message || "Search failed");
     } finally {
@@ -358,8 +440,8 @@ export const DiscoverPanel = ({
     }
   };
 
-  // Al abrir el panel con GPS disponible: sugerencias locales automáticas
-  // (próximos eventos cerca de ti), una sola vez por sesión de panel.
+  // Al abrir con GPS: por defecto modo "Near me" (una vez por sesión de panel).
+  // La búsqueda en sí la dispara el efecto de auto-búsqueda de abajo.
   useEffect(() => {
     if (!show) {
       didAutoSearchRef.current = false;
@@ -369,10 +451,44 @@ export const DiscoverPanel = ({
     if (userCenter) {
       didAutoSearchRef.current = true;
       setMode("near");
-      search(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [show, userCenter]);
+
+  // Sin botón Search: auto-búsqueda (debounced) al cambiar filtros o modo —
+  // igual en overlay (desktop) y en página (móvil). Solo dispara con destino
+  // válido: GPS para "Near me", una ciudad escrita para "City / trip".
+  useEffect(() => {
+    if (!show || view !== "events") return;
+    if (mode === "near" && !userCenter) return;
+    if (mode === "city" && !city.trim()) return;
+    const t = setTimeout(() => search(0), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, view, mode, q, dateFrom, dateTo, category, radius, city, userCenter]);
+
+  // Búsqueda de creators (debounced) por nombre + tipo.
+  useEffect(() => {
+    if (view !== "creators") return;
+    if (creatorDebounceRef.current) clearTimeout(creatorDebounceRef.current);
+    creatorDebounceRef.current = setTimeout(async () => {
+      setCreatorLoading(true);
+      try {
+        const p = new URLSearchParams();
+        if (creatorQ.trim()) p.set("q", creatorQ.trim());
+        if (creatorKind !== "all") p.set("type", creatorKind);
+        const data = await api.get(`/discover/creators?${p.toString()}`);
+        setCreatorResults(data.results || []);
+      } catch {
+        setCreatorResults([]);
+      } finally {
+        setCreatorLoading(false);
+        setCreatorSearched(true);
+      }
+    }, 350);
+    return () => { if (creatorDebounceRef.current) clearTimeout(creatorDebounceRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, creatorQ, creatorKind]);
 
   if (!show) return null;
 
@@ -388,19 +504,32 @@ export const DiscoverPanel = ({
   });
 
   return (
-    <div className="sq-discover-panel" role="dialog" aria-label="Discover events">
+    <div className={`sq-discover-panel ${variant === "page" ? "as-page" : ""}`} role="dialog" aria-label="Discover events">
       <style>{PANEL_CSS}</style>
 
-      <div className="sq-discover-header">
-        <div className="sq-discover-title">
-          <FiCompass /> Discover events
+      {variant === "overlay" && (
+        <div className="sq-discover-header">
+          <div className="sq-discover-title">
+            <FiCompass /> Discover events
+          </div>
+          <Button className="sq-discover-close" onClick={onClose} aria-label="Close">
+            <FiX size={20} />
+          </Button>
         </div>
-        <Button className="sq-discover-close" onClick={onClose} aria-label="Close">
-          <FiX size={20} />
-        </Button>
-      </div>
+      )}
 
       <div className="sq-discover-filters">
+        {/* Events / Creators view toggle */}
+        <div className="sq-discover-view">
+          <button type="button" className={view === "events" ? "active" : ""} onClick={() => setView("events")}>
+            Events
+          </button>
+          <button type="button" className={view === "creators" ? "active" : ""} onClick={() => setView("creators")}>
+            Creators
+          </button>
+        </div>
+
+        {view === "events" && (<>
         <div className="sq-discover-mode">
           <button
             type="button"
@@ -459,28 +588,44 @@ export const DiscoverPanel = ({
           )}
         </div>
 
-        <div className="d-flex gap-2 mb-2">
-          <Form.Control
-            type="date" value={dateFrom} title="From"
-            onChange={(e) => setDateFrom(e.target.value)}
-          />
-          <Form.Control
-            type="date" value={dateTo} title="To"
-            onChange={(e) => setDateTo(e.target.value)}
-          />
-          <Form.Control
-            type="number" min="0" placeholder="Max €"
-            value={maxPrice} title="Max price"
-            onChange={(e) => setMaxPrice(e.target.value)}
-            style={{ maxWidth: 90 }}
-          />
+        {/* Date-range + price filters. `type="date"` inputs ignore
+            `placeholder` and their `title` tooltip never shows on touch
+            devices, so on a phone you can't tell which field is which.
+            Visible mini-labels fix that (clear on mobile, harmless on
+            desktop). */}
+        <div className="d-flex gap-2 mb-2 align-items-end">
+          <div className="sq-discover-field flex-fill">
+            <label className="sq-discover-minilabel" htmlFor="sq-date-from">From</label>
+            <Form.Control
+              id="sq-date-from"
+              type="date" value={dateFrom} title="From date"
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+          </div>
+          <div className="sq-discover-field flex-fill">
+            <label className="sq-discover-minilabel" htmlFor="sq-date-to">To</label>
+            <Form.Control
+              id="sq-date-to"
+              type="date" value={dateTo} title="To date"
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </div>
+          <div className="sq-discover-field" style={{ maxWidth: 90 }}>
+            <label className="sq-discover-minilabel" htmlFor="sq-max-price">Price</label>
+            <Form.Control
+              id="sq-max-price"
+              type="number" min="0" placeholder="Max €"
+              value={maxPrice} title="Max price"
+              onChange={(e) => setMaxPrice(e.target.value)}
+            />
+          </div>
         </div>
 
-        <Button className="sq-discover-search-btn w-100" onClick={() => search(0)} disabled={loading}>
-          {loading && page === 0
-            ? <Spinner size="sm" animation="border" />
-            : <><FiSearch className="me-1" /> Search</>}
-        </Button>
+        {/* Sin botón Search: la búsqueda es automática (onChange + clic de modo).
+            Solo dejamos un indicador de carga para la primera página. */}
+        {loading && page === 0 && (
+          <div className="text-center py-2"><Spinner size="sm" animation="border" /></div>
+        )}
 
         {/* Tanda 7X5 — "missed details": mostrar eventos sin fecha
             (sobre todo de Google). Solo aparece si los hay. */}
@@ -494,9 +639,64 @@ export const DiscoverPanel = ({
             onChange={(e) => setShowIncomplete(e.target.checked)}
           />
         )}
+        </>)}
+
+        {view === "creators" && (
+          <div className="sq-discover-creators-search">
+            <Form.Control
+              value={creatorQ}
+              onChange={(e) => setCreatorQ(e.target.value)}
+              placeholder="Search businesses & influencers…"
+              autoFocus
+            />
+            <div className="sq-discover-mode mt-2">
+              <button type="button" className={creatorKind === "all" ? "active" : ""} onClick={() => setCreatorKind("all")}>All</button>
+              <button type="button" className={creatorKind === "place" ? "active" : ""} onClick={() => setCreatorKind("place")}>Businesses</button>
+              <button type="button" className={creatorKind === "influencer" ? "active" : ""} onClick={() => setCreatorKind("influencer")}>Influencers</button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="sq-discover-results">
+        {view === "creators" ? (
+          <>
+            {creatorLoading && (
+              <div className="text-center py-3"><Spinner size="sm" animation="border" /></div>
+            )}
+            {!creatorLoading && creatorSearched && creatorResults.length === 0 && (
+              <div className="sq-discover-empty">No creators found. Try another name.</div>
+            )}
+            {creatorResults.map((r) => (
+              <div
+                key={`${r.kind}-${r.id}`}
+                className="sq-creator-card"
+                onClick={() => navigate(r.link)}
+                title="View profile"
+              >
+                {r.picture ? (
+                  <img className="sq-creator-avatar" src={r.picture} alt=""
+                    onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                ) : (
+                  <div className="sq-creator-avatar-fallback">
+                    {r.kind === "influencer" ? <FiStar /> : <FiBriefcase />}
+                  </div>
+                )}
+                <div className="sq-creator-body">
+                  <div className="sq-creator-title text-truncate">{r.title}</div>
+                  <div className="sq-creator-sub text-truncate">
+                    {r.subtitle}
+                    {r.rating != null && (<> · <FiStar size={12} style={{ color: "#f5b301" }} /> {r.rating}</>)}
+                  </div>
+                </div>
+                <span className="sq-creator-kind">
+                  {r.kind === "influencer" ? "Influencer" : "Business"}
+                </span>
+              </div>
+            ))}
+          </>
+        ) : (
+        <>
         {error && <div className="sq-discover-empty">{error}</div>}
 
         {!error && !loading && visible.length === 0 && (
@@ -569,6 +769,8 @@ export const DiscoverPanel = ({
         )}
         {loading && page > 0 && (
           <div className="text-center py-2"><Spinner size="sm" animation="border" /></div>
+        )}
+        </>
         )}
       </div>
     </div>
