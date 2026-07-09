@@ -3,10 +3,11 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Container, Row, Col, Card, Button, Form, Spinner, Alert, Badge } from "react-bootstrap";
 import {
   FiMapPin, FiMail, FiCalendar, FiClock, FiStar, FiArrowLeft,
-  FiImage, FiMessageCircle, FiEdit2, FiTrash2, FiUser, FiUserPlus, FiUserCheck, FiUsers,
+  FiImage, FiMessageCircle, FiEdit2, FiTrash2, FiUser, FiUserPlus, FiUserCheck, FiUsers, FiZap, FiPlus, FiShare2,
 } from "react-icons/fi";
 
 import { api } from "../services/api";
+import { EventModal } from "../components/EventModal";
 
 // ════════════════════════════════════════════════════════════════
 // InfluencerProfile — route /influencer/:id
@@ -80,6 +81,18 @@ export const InfluencerProfile = () => {
 
   // follow state
   const [following, setFollowing] = useState(false);
+  // Commit 2 — "create event from this influencer's suggestion" modal state.
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestPrefill, setSuggestPrefill] = useState(null);
+
+  const openSuggestion = (ev) => {
+    setSuggestPrefill({
+      coords: (ev.latitude != null && ev.longitude != null)
+        ? { latitude: ev.latitude, longitude: ev.longitude } : null,
+      location: ev.location || "",
+    });
+    setSuggestOpen(true);
+  };
   const [followers, setFollowers] = useState(0);
   const [followBusy, setFollowBusy] = useState(false);
   useEffect(() => {
@@ -207,6 +220,17 @@ export const InfluencerProfile = () => {
                   <Badge bg="secondary">Influencer</Badge>
                 </div>
                 {data.username && <div className="text-secondary mb-2">@{data.username}</div>}
+                {data.exp_with_you != null && data.exp_with_you > 0 && (
+                  <div className="mb-2">
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", gap: 6,
+                      background: "linear-gradient(135deg,#6366f1,#ec4899)", color: "#fff",
+                      borderRadius: 999, padding: "3px 12px", fontSize: "0.8rem", fontWeight: 700,
+                    }}>
+                      <FiZap size={13} /> {data.exp_with_you} EXP with you
+                    </span>
+                  </div>
+                )}
                 {data.bio && <p className="text-light mb-2">{data.bio}</p>}
                 <div className="d-flex flex-wrap align-items-center gap-3 small text-secondary mb-2">
                   <span><FiUsers className="me-1" />{followers} follower{followers === 1 ? "" : "s"}</span>
@@ -222,6 +246,23 @@ export const InfluencerProfile = () => {
                     disabled={followBusy}
                   >
                     {following ? <><FiUserCheck className="me-1" /> Following</> : <><FiUserPlus className="me-1" /> Follow</>}
+                  </Button>
+                )}
+                {!isSelf && (
+                  <Button
+                    size="sm"
+                    variant="outline-light"
+                    className="ms-2"
+                    onClick={async () => {
+                      try { await api.post(`/profile/${id}/share`, {}); } catch { /* best-effort */ }
+                      const url = `${window.location.origin}/influencer/${id}`;
+                      try {
+                        if (navigator.share) { await navigator.share({ title: data.username, url }); }
+                        else { await navigator.clipboard.writeText(url); setToast("Profile link copied."); }
+                      } catch { /* user cancelled */ }
+                    }}
+                  >
+                    <FiShare2 className="me-1" /> Share
                   </Button>
                 )}
               </Col>
@@ -277,6 +318,19 @@ export const InfluencerProfile = () => {
                               </Button>
                             ) : (
                               <span className="small text-secondary fst-italic">No opinion yet</span>
+                            )}
+
+                            {/* Commit 2 — viewers spin up their own event at
+                                this spot, credited to the influencer. */}
+                            {!isSelf && (
+                              <Button
+                                size="sm"
+                                variant="outline-light"
+                                className="w-100 mt-2"
+                                onClick={() => openSuggestion(ev)}
+                              >
+                                <FiPlus className="me-1" /> Create event here
+                              </Button>
                             )}
 
                             {expanded && (
@@ -336,6 +390,19 @@ export const InfluencerProfile = () => {
           </Card.Body>
         </Card>
       </Container>
+
+      {/* Commit 2 — create-from-suggestion modal (location prefilled,
+          credited to this influencer). */}
+      {suggestOpen && (
+        <EventModal
+          show={suggestOpen}
+          onHide={() => setSuggestOpen(false)}
+          prefillCoords={suggestPrefill?.coords || null}
+          prefillEvent={suggestPrefill ? { location: suggestPrefill.location } : null}
+          suggestedById={id}
+          onSaved={() => { setSuggestOpen(false); setToast("Event created — the creator was notified."); }}
+        />
+      )}
     </div>
   );
 };

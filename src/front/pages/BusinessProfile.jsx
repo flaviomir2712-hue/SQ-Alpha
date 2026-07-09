@@ -28,6 +28,8 @@ import {
 	FiUsers,
 	FiUserPlus,
 	FiUserCheck,
+	FiZap,
+	FiShare2,
 } from "react-icons/fi";
 
 import { api } from "../services/api";
@@ -495,6 +497,35 @@ export const BusinessProfile = () => {
 								{biz.location && (
 									<div className="text-secondary"><FiMapPin className="me-1" />{biz.location}</div>
 								)}
+								{/* EXP — the venue's OWN level bar (public; grows +5 each time a
+								    user throws an event here and it actually happens). */}
+								{biz.business_level && (
+									<div className="mt-3" style={{ maxWidth: 420 }}>
+										<div className="mb-1" style={{ fontSize: "0.75rem", letterSpacing: "0.08em", textTransform: "uppercase", color: "#9aa0b4", fontWeight: 600 }}>
+											<FiZap size={12} className="me-1" />
+											LvL {biz.business_level.level} — Exp {biz.business_level.progress_in_level}/{biz.business_level.level_needs}
+										</div>
+										<div style={{ position: "relative", height: 10, borderRadius: 999, background: "#0b0d12", overflow: "hidden", border: "1px solid #262a36" }}>
+											<div style={{
+												position: "absolute", left: 0, top: 0, bottom: 0,
+												width: `${Math.min(100, (biz.business_level.progress_in_level / Math.max(1, biz.business_level.level_needs)) * 100)}%`,
+												background: "linear-gradient(90deg,#6366f1,#ec4899)",
+											}} />
+										</div>
+									</div>
+								)}
+								{/* EXP — the viewer's connection points WITH this venue (non-owners). */}
+								{biz.exp_with_you != null && biz.exp_with_you > 0 && (
+									<div className="mt-2">
+										<span style={{
+											display: "inline-flex", alignItems: "center", gap: 6,
+											background: "linear-gradient(135deg,#6366f1,#ec4899)", color: "#fff",
+											borderRadius: 999, padding: "3px 12px", fontSize: "0.8rem", fontWeight: 700,
+										}}>
+											<FiZap size={13} /> {biz.exp_with_you} EXP with you
+										</span>
+									</div>
+								)}
 								{biz.description && <p className="text-light mt-2 mb-0">{biz.description}</p>}
 								<div className="d-flex gap-2 mt-3 flex-wrap">
 									{!biz.is_owner && (
@@ -511,6 +542,22 @@ export const BusinessProfile = () => {
 									<Button size="sm" variant="outline-primary" className="inf-opinion-btn" onClick={createEventHere}>
 										<FiCalendar className="me-1" /> Create event here
 									</Button>
+									{!biz.is_owner && (
+										<Button
+											size="sm"
+											variant="outline-light"
+											onClick={async () => {
+												try { await api.post(`/business/${biz.id}/share`, {}); } catch { /* best-effort */ }
+												const url = `${window.location.origin}/business/${biz.id}`;
+												try {
+													if (navigator.share) { await navigator.share({ title: biz.name, url }); }
+													else { await navigator.clipboard.writeText(url); }
+												} catch { /* cancelled */ }
+											}}
+										>
+											<FiShare2 className="me-1" /> Share
+										</Button>
+									)}
 								</div>
 							</Col>
 						</Row>

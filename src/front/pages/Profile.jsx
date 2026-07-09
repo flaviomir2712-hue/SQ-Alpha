@@ -33,31 +33,17 @@ import {
 import { UpgradePro } from "../components/UpgradePro";
 import { CompaniesMenu } from "../components/CompaniesMenu";
 import { setSession } from "../services/auth";
+import { api } from "../services/api";
 
 // =============================================================
 // INLINE API
 // =============================================================
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
+const apiGetMyProfile = () => api.get("/profile/me");
+const apiGetMyExp = () => api.get("/exp/me");
+const apiGetAttendable = () => api.get("/events/attendable");
+const apiConfirmAttended = (eventId) => api.post(`/events/${eventId}/attended`, {});
 
-const handle = async (res) => {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-  return data;
-};
-
-const apiGetMyProfile = () =>
-  fetch(`${API}/api/profile/me`, { headers: authHeaders() }).then(handle);
-
-const apiUpdateMyProfile = (body) =>
-  fetch(`${API}/api/profile/me`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify(body),
-  }).then(handle);
+const apiUpdateMyProfile = (body) => api.put("/profile/me", body);
 
 // =============================================================
 // INLINE STYLES (dark, coherent with FriendProfile / EventModal)
@@ -201,6 +187,8 @@ export const Profile = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
+  const [exp, setExp] = useState(null);
+  const [attendable, setAttendable] = useState([]);
 
   // After a Pro/Premium activation, fold the refreshed user into the profile
   // (so the badge + price unlock without a reload) and persist the session.
@@ -238,8 +226,29 @@ export const Profile = () => {
     }
   };
 
+  const reloadExp = async () => {
+    try {
+      const [e, a] = await Promise.all([apiGetMyExp(), apiGetAttendable()]);
+      setExp(e);
+      setAttendable(a || []);
+    } catch {
+      /* EXP is non-critical chrome — never block the profile on it. */
+    }
+  };
+
+  const handleConfirmAttended = async (eventId) => {
+    try {
+      await apiConfirmAttended(eventId);
+      await reloadExp();
+      showToast("Nice — connection points added!");
+    } catch (e) {
+      showToast(e.message || "Couldn't confirm", "danger");
+    }
+  };
+
   useEffect(() => {
     reload();
+    reloadExp();
   }, []);
 
   const showToast = (text, variant = "success") => {
@@ -432,7 +441,7 @@ export const Profile = () => {
 
                     <div className="d-flex gap-2 flex-wrap">
                       <Button variant="primary" onClick={openEdit}>
-                        <FiEdit2 className="me-1" /> Editar perfil
+                        <FiEdit2 className="me-1" /> Edit profile
                       </Button>
                       {profile.account_type !== "business" && !profile.is_pro && !profile.is_premium && (
                         <UpgradePro user={profile} onUpgraded={handleUpgraded} />
@@ -448,13 +457,74 @@ export const Profile = () => {
                         </Button>
                       </Link>
                       <Button variant="outline-danger" onClick={handleLogout}>
-                        <FiLogOut className="me-1" /> Salir
+                        <FiLogOut className="me-1" /> Log out
                       </Button>
                     </div>
                   </Col>
                 </Row>
               </Card.Body>
             </Card>
+
+            {/* EXP — connection points level bar */}
+            {exp && (
+              <Card className="profile-card mb-4">
+                <Card.Body>
+                  <div className="d-flex justify-content-between align-items-center mb-2">
+                    <span style={{ fontSize: "0.8rem", letterSpacing: "0.08em", textTransform: "uppercase", color: "#9aa0b4", fontWeight: 600 }}>
+                      LvL {exp.level} — Exp {exp.progress_in_level}/{exp.level_needs}
+                    </span>
+                    {exp.pending > 0 && (
+                      <Badge bg="warning" text="dark">+{exp.pending} to claim</Badge>
+                    )}
+                  </div>
+                  <div style={{ position: "relative", height: 12, borderRadius: 999, background: "#0b0d12", overflow: "hidden", border: "1px solid #262a36" }}>
+                    {exp.pending > 0 && (
+                      <div style={{
+                        position: "absolute", left: 0, top: 0, bottom: 0,
+                        width: `${Math.min(100, ((exp.progress_in_level + exp.pending) / Math.max(1, exp.level_needs)) * 100)}%`,
+                        background: "repeating-linear-gradient(45deg,#3a2f5a,#3a2f5a 6px,#2a2340 6px,#2a2340 12px)",
+                      }} />
+                    )}
+                    <div style={{
+                      position: "absolute", left: 0, top: 0, bottom: 0,
+                      width: `${Math.min(100, (exp.progress_in_level / Math.max(1, exp.level_needs)) * 100)}%`,
+                      background: "linear-gradient(90deg,#6366f1,#ec4899)",
+                    }} />
+                  </div>
+                  <div style={{ fontSize: "0.78rem", color: "#9aa0b4", marginTop: 6 }}>
+                    Connection points{exp.pending > 0 ? " · tap “I went” below to claim your pending EXP" : ""}
+                  </div>
+                </Card.Body>
+              </Card>
+            )}
+
+            {/* "I WENT" — confirm past events to earn EXP */}
+            {attendable.length > 0 && (
+              <Card className="profile-card mb-4">
+                <Card.Body>
+                  <div style={{ fontSize: "0.8rem", letterSpacing: "0.08em", textTransform: "uppercase", color: "#9aa0b4", fontWeight: 600, marginBottom: 10 }}>
+                    Did you make it?
+                  </div>
+                  {attendable.map((ev) => (
+                    <div key={ev.id} className="d-flex align-items-center justify-content-between mb-2" style={{ gap: 12 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="text-light text-truncate" style={{ fontWeight: 600 }}>{ev.title || "Event"}</div>
+                        <div style={{ fontSize: "0.75rem", color: "#9aa0b4" }} className="text-truncate">
+                          {ev.date}{ev.time ? ` · ${ev.time}` : ""}{ev.location ? ` · ${ev.location}` : ""}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleConfirmAttended(ev.id)}
+                        style={{ background: "linear-gradient(135deg,#6366f1,#ec4899)", border: "none", whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        I went <Badge bg="light" text="dark" className="ms-1">+{ev.estimated_exp}</Badge>
+                      </Button>
+                    </div>
+                  ))}
+                </Card.Body>
+              </Card>
+            )}
 
             {/* STATS */}
             <Row className="g-3 mb-4">
@@ -512,7 +582,7 @@ export const Profile = () => {
       >
         <Modal.Header closeButton closeVariant="white">
           <Modal.Title className="d-flex align-items-center gap-2">
-            <FiEdit2 /> Editar perfil
+            <FiEdit2 /> Edit profile
           </Modal.Title>
         </Modal.Header>
 
@@ -521,7 +591,7 @@ export const Profile = () => {
 
             {/* PHOTO UPLOADER */}
             <Col xs={12} className="text-center">
-              <Form.Label>Foto de perfil</Form.Label>
+              <Form.Label>Profile photo</Form.Label>
               <div className="d-flex flex-column align-items-center gap-2">
                 {form.profile_picture_url ? (
                   <img
@@ -550,7 +620,7 @@ export const Profile = () => {
                     onClick={handlePickPhoto}
                   >
                     <FiImage className="me-1" />
-                    {form.profile_picture_url ? "Cambiar foto" : "Subir foto"}
+                    {form.profile_picture_url ? "Change photo" : "Upload photo"}
                   </Button>
                   {form.profile_picture_url && (
                     <Button
@@ -574,7 +644,7 @@ export const Profile = () => {
                 name="username"
                 value={form.username}
                 onChange={handleField}
-                placeholder="username único"
+                placeholder="unique username"
               />
             </Col>
 
@@ -653,7 +723,7 @@ export const Profile = () => {
                 name="bio"
                 value={form.bio}
                 onChange={handleField}
-                placeholder="Cuenta algo sobre ti..."
+                placeholder="Tell us about yourself..."
               />
             </Col>
           </Row>
@@ -661,12 +731,12 @@ export const Profile = () => {
 
         <Modal.Footer>
           <Button variant="outline-light" onClick={closeEdit} disabled={saving}>
-            Cancelar
+            Cancel
           </Button>
           <Button onClick={handleSave} disabled={saving}>
             {saving
               ? <Spinner animation="border" size="sm" />
-              : <><FiSave className="me-1" /> Guardar</>
+              : <><FiSave className="me-1" /> Save</>
             }
           </Button>
         </Modal.Footer>

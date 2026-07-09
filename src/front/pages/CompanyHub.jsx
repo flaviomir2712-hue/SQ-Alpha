@@ -19,14 +19,15 @@ import {
   FiGrid,
   FiUsers,
   FiExternalLink,
-  FiEdit2,
   FiPlus,
+  FiBarChart2,
 } from "react-icons/fi";
 
 import { EventModal } from "../components/EventModal";
 import { CompanyEventCard } from "../components/CompanyEventCard";
 import { TeamManager } from "../components/TeamManager";
-import { BusinessProfile } from "../components/BusinessProfile";
+import { DashboardPanel } from "../components/DashboardPanel";
+import { api } from "../services/api";
 
 // =============================================================
 // CompanyHub — Phase 5a/5b, route /manage
@@ -37,12 +38,6 @@ import { BusinessProfile } from "../components/BusinessProfile";
 // Each event is a CompanyEventCard; click opens the EventModal.
 // Consumes /api/manage/scope and /api/manage/events.
 // =============================================================
-
-const API = import.meta.env.VITE_BACKEND_URL;
-const authHeaders = () => ({
-  "Content-Type": "application/json",
-  Authorization: `Bearer ${localStorage.getItem("token")}`,
-});
 
 const CSS = `
 .company-hub-page {
@@ -92,7 +87,7 @@ export const CompanyHub = () => {
   const [modalOpen, setModalOpen]         = useState(false);
   const [activeEventId, setActiveEventId] = useState(null);
   const [showTeam, setShowTeam]           = useState(false);
-  const [editSignal, setEditSignal]       = useState(0);
+  const [showDashboard, setShowDashboard] = useState(false);
 
   // ── load scope (what can I manage?) ──
   useEffect(() => {
@@ -100,11 +95,7 @@ export const CompanyHub = () => {
       setLoadingScope(true);
       setError(null);
       try {
-        const res = await fetch(`${API}/api/manage/scope`, { headers: authHeaders() });
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 403) { setNotPro(true); return; }
-        if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
-
+        const data = await api.get("/manage/scope");
         setScopeType(data.type);
         if (data.type === "business") {
           const list = Array.isArray(data.businesses) ? data.businesses : [];
@@ -112,6 +103,7 @@ export const CompanyHub = () => {
           if (list.length) setSelectedBizId(list[0].id);
         }
       } catch (e) {
+        if (e.status === 403) { setNotPro(true); return; }
         setError(e.message);
       } finally {
         setLoadingScope(false);
@@ -126,9 +118,7 @@ export const CompanyHub = () => {
     setError(null);
     try {
       const qs = scopeType === "business" ? `?business_id=${selectedBizId}` : "";
-      const res = await fetch(`${API}/api/manage/events${qs}`, { headers: authHeaders() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
+      const data = await api.get(`/manage/events${qs}`);
       setEvents(Array.isArray(data.events) ? data.events : []);
     } catch (e) {
       setError(e.message);
@@ -206,7 +196,9 @@ export const CompanyHub = () => {
                     {b.name}
                     <span className="sq-biz-badges">
                       {b.is_pro && <Badge bg="primary"><FiStar /> Pro</Badge>}
-                      {b.verified && <Badge bg="success"><FiCheckCircle /> Verified</Badge>}
+                      {b.verified
+                        ? <Badge bg="success"><FiCheckCircle /> Verified</Badge>
+                        : <Badge bg="secondary"><FiClock /> Pending</Badge>}
                     </span>
                   </Dropdown.Item>
                 ))}
@@ -217,8 +209,11 @@ export const CompanyHub = () => {
                 <Button className="sq-biz-toggle" onClick={() => setShowTeam(true)}>
                   <FiUsers /> Team
                 </Button>
-                <Button className="sq-biz-toggle" onClick={() => setEditSignal((n) => n + 1)}>
-                  <FiEdit2 /> Edit
+                <Button className="sq-biz-toggle" onClick={() => setShowDashboard((v) => !v)}>
+                  <FiBarChart2 /> {showDashboard ? "Back to events" : "Dashboard"}
+                </Button>
+                <Button className="sq-biz-toggle" onClick={() => navigate(`/business/${selectedBizId}`)}>
+                  <FiExternalLink /> View public page
                 </Button>
                 <Button variant="primary" onClick={openCreate}>
                   <FiPlus className="me-1" /> New event
@@ -229,9 +224,14 @@ export const CompanyHub = () => {
           )}
 
           {scopeType === "influencer" && (
-            <Button variant="primary" onClick={openCreate}>
-              <FiPlus className="me-1" /> New event
-            </Button>
+            <>
+              <Button className="sq-biz-toggle" onClick={() => setShowDashboard((v) => !v)}>
+                <FiBarChart2 /> {showDashboard ? "Back to events" : "Dashboard"}
+              </Button>
+              <Button variant="primary" onClick={openCreate}>
+                <FiPlus className="me-1" /> New event
+              </Button>
+            </>
           )}
         </div>
 
@@ -239,16 +239,14 @@ export const CompanyHub = () => {
           <Alert variant="danger" onClose={() => setError(null)} dismissible>{error}</Alert>
         )}
 
-        {scopeType === "business" && businesses.length === 0 ? (
+        {showDashboard && ((scopeType === "business" && selectedBizId) || scopeType === "influencer") ? (
+          <DashboardPanel scope={scopeType} businessId={selectedBizId} />
+        ) : scopeType === "business" && businesses.length === 0 ? (
           <div className="text-center py-5 text-secondary">
             <FiBriefcase size={42} className="mb-2" />
             <h5 className="text-light">No companies yet</h5>
             <div className="small">Add a company from your profile to start managing it here.</div>
           </div>
-        ) : scopeType === "business" && selectedBizId ? (
-          /* #8a — the Manage page shows the live public-page view for the
-             selected company (card, hours, events, reviews, posts). */
-          <BusinessProfile businessId={selectedBizId} embedded editSignal={editSignal} />
         ) : loadingEvents ? (
           <div className="text-center py-5 text-secondary"><Spinner animation="border" /></div>
         ) : events.length === 0 ? (

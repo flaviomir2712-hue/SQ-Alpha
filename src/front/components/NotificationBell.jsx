@@ -155,6 +155,19 @@ const TYPE_META = {
         icon: <FiUser size={18} />,
         navigateTo: () => "/manage",
     },
+    // Commit 1 — post-event "did you go?" nudge. Tapping goes to the profile,
+    // where the "Did you make it?" card confirms attendance and grants EXP.
+    attendance_prompt: {
+        avatarClass: "confirm",
+        icon: <FiHelpCircle size={18} />,
+        navigateTo: () => "/profile",
+    },
+    // Commit 2 — someone created an event based on an influencer's suggestion.
+    suggestion_event_created: {
+        avatarClass: "confirm",
+        icon: <FiCalendar size={18} />,
+        navigateTo: (p) => p.event_id ? `/map?event=${p.event_id}` : "/events",
+    },
 };
 
 const DEFAULT_META = {
@@ -513,6 +526,12 @@ const renderMessage = (n) => {
 
         case "team_member_joined":
             return (<><strong>{p.username || "Someone"}</strong> joined <strong>{p.business_name || "your company"}</strong> as {p.role}</>);
+
+        case "attendance_prompt":
+            return (<>Did you make it to "<strong>{p.event_title || "your event"}</strong>"? Tap to confirm and earn EXP</>);
+
+        case "suggestion_event_created":
+            return (<><strong>{p.by_username ? `@${p.by_username}` : "Someone"}</strong> created an event based on your suggestion</>);
 
         default:
             return "You have a new notification";
