@@ -400,14 +400,33 @@ export const FriendProfile = () => {
                     {profile.username && (
                       <div className="text-secondary mb-2">@{profile.username}</div>
                     )}
-                    {profile.exp_with_you != null && profile.exp_with_you > 0 && (
+
+                    {/* Friend's OWN level + our relationship EXP. */}
+                    {profile.exp && (
+                      <div className="mb-3" style={{ maxWidth: 340 }}>
+                        <div className="d-flex justify-content-between align-items-center mb-1">
+                          <span style={{ fontSize: "0.75rem", letterSpacing: "0.06em", textTransform: "uppercase", color: "#9aa0b4", fontWeight: 600 }}>
+                            <FiZap size={12} className="me-1" />
+                            LvL {profile.exp.level} — Exp {profile.exp.progress_in_level}/{profile.exp.level_needs}
+                          </span>
+                        </div>
+                        <div style={{ position: "relative", height: 10, borderRadius: 999, background: "#0b0d12", overflow: "hidden", border: "1px solid #262a36" }}>
+                          <div style={{
+                            position: "absolute", left: 0, top: 0, bottom: 0,
+                            width: `${Math.min(100, (profile.exp.progress_in_level / Math.max(1, profile.exp.level_needs)) * 100)}%`,
+                            background: "linear-gradient(90deg,#6366f1,#ec4899)",
+                          }} />
+                        </div>
+                      </div>
+                    )}
+                    {profile.exp_with_you != null && (
                       <div className="mb-2">
                         <span style={{
                           display: "inline-flex", alignItems: "center", gap: 6,
                           background: "linear-gradient(135deg,#6366f1,#ec4899)", color: "#fff",
                           borderRadius: 999, padding: "3px 12px", fontSize: "0.8rem", fontWeight: 700,
                         }}>
-                          <FiZap size={13} /> {profile.exp_with_you} EXP with you
+                          <FiZap size={13} /> {profile.exp_with_you} EXP together
                         </span>
                       </div>
                     )}

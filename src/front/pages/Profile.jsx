@@ -27,6 +27,7 @@ import {
   FiActivity,
   FiUser,
   FiCake,
+  FiZap,
   FiStar,
 } from "react-icons/fi";
 
@@ -34,6 +35,7 @@ import { UpgradePro } from "../components/UpgradePro";
 import { CompaniesMenu } from "../components/CompaniesMenu";
 import { setSession } from "../services/auth";
 import { api } from "../services/api";
+import { ExpBar } from "../components/ExpBar";
 
 // =============================================================
 // INLINE API
@@ -227,12 +229,17 @@ export const Profile = () => {
   };
 
   const reloadExp = async () => {
+    // Independent fetches + a default, so the bar ALWAYS renders even if the
+    // backend/endpoint/table isn't ready yet (it just shows level 1 · 0/40).
     try {
-      const [e, a] = await Promise.all([apiGetMyExp(), apiGetAttendable()]);
-      setExp(e);
-      setAttendable(a || []);
+      setExp(await apiGetMyExp());
     } catch {
-      /* EXP is non-critical chrome — never block the profile on it. */
+      setExp({ level: 1, progress_in_level: 0, level_needs: 40, pending: 0 });
+    }
+    try {
+      setAttendable((await apiGetAttendable()) || []);
+    } catch {
+      setAttendable([]);
     }
   };
 
@@ -260,13 +267,13 @@ export const Profile = () => {
   const openEdit = () => {
     if (!profile) return;
     setForm({
-      username:            profile.username            || "",
-      first_name:          profile.first_name          || "",
-      last_name:           profile.last_name           || "",
-      city:                profile.city                || "",
-      bio:                 profile.bio                 || "",
-      birthdate:           profile.birthdate           || "",
-      phone:               profile.phone               || "",
+      username: profile.username || "",
+      first_name: profile.first_name || "",
+      last_name: profile.last_name || "",
+      city: profile.city || "",
+      bio: profile.bio || "",
+      birthdate: profile.birthdate || "",
+      phone: profile.phone || "",
       profile_picture_url: profile.profile_picture_url || "",
     });
     setEditing(true);
@@ -308,13 +315,13 @@ export const Profile = () => {
     setSaving(true);
     try {
       const data = await apiUpdateMyProfile({
-        username:            form.username || null,
-        first_name:          form.first_name || null,
-        last_name:           form.last_name || null,
-        city:                form.city || null,
-        bio:                 form.bio || null,
-        birthdate:           form.birthdate || null,
-        phone:               form.phone || null,
+        username: form.username || null,
+        first_name: form.first_name || null,
+        last_name: form.last_name || null,
+        city: form.city || null,
+        bio: form.bio || null,
+        birthdate: form.birthdate || null,
+        phone: form.phone || null,
         profile_picture_url: form.profile_picture_url || null,
       });
       setProfile((p) => ({ ...p, ...data.user }));
@@ -334,7 +341,6 @@ export const Profile = () => {
     localStorage.removeItem("user");
     navigate("/login", { replace: true });
   };
-
   // =====================================================
   // RENDER
   // =====================================================
@@ -384,9 +390,12 @@ export const Profile = () => {
                         className="profile-hero-avatar"
                         onError={(e) => { e.target.style.display = "none"; }}
                       />
+                      
                     ) : (
                       <div className="profile-hero-avatar profile-hero-fallback">
                         {initials(profile)}
+                        <ExpBar />
+
                       </div>
                     )}
                   </Col>
@@ -497,6 +506,7 @@ export const Profile = () => {
                 </Card.Body>
               </Card>
             )}
+            
 
             {/* "I WENT" — confirm past events to earn EXP */}
             {attendable.length > 0 && (

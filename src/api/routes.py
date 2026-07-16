@@ -24,6 +24,7 @@ from api.models import (
     BusinessPost, Review, EventOpinion, Follow,
     Subscription, FREE_FRIEND_CAP, PREMIUM_FRIEND_CAP,
     TeamMembership, TeamInvite, TEAM_ROLES,
+    ExpLedger, exp_level_info,
 )
 # Tanda 7F — Socket.IO: instancia global + helpers (ver api/sockets.py).
 from api.sockets import socketio, emit_to_user, allowed_origins
@@ -2701,6 +2702,11 @@ def get_user_profile(user_id):
         data["friendship_id"] = None
 
     data["stats"] = _compute_stats(user_id)
+    # EXP — this person's OWN level, plus (on someone else's profile) the
+    # viewer's relationship EXP with them.
+    data["exp"] = exp_level_info(_exp_total(user_id))
+    if user_id != current_user_id:
+        data["exp_with_you"] = _exp_pair_with_friend(current_user_id, user_id)
     return jsonify(data), 200
 
 
@@ -3183,6 +3189,10 @@ def get_business(business_id):
 
     data = biz.serialize(include_feed=True, current_user_id=current_user_id)
     data["is_owner"] = (biz.owner_id == current_user_id)
+    # EXP — the venue's OWN level (public) + the viewer's points WITH this venue.
+    data["business_level"] = exp_level_info(_business_own_exp(biz.id))
+    if biz.owner_id != current_user_id:
+        data["exp_with_you"] = _exp_pair_with_business(current_user_id, biz.id)
     # The current user's own review, if any (so the UI can prefill the form).
     my_review = next(
         (r for r in (biz.reviews or []) if r.author_id == current_user_id), None)
@@ -3383,6 +3393,7 @@ def get_influencer(user_id):
         "bio":                 user.bio,
         "account_type":        user.account_type,
         "is_self":             (user_id == current_user_id),
+        "exp_with_you":        (None if user_id == current_user_id else _exp_pair_with_friend(current_user_id, user_id)),
         "followers_count":     Follow.query.filter_by(target_user_id=user_id).count(),
         "is_following":        Follow.query.filter_by(
             follower_id=current_user_id, target_user_id=user_id).first() is not None,
@@ -3617,11 +3628,27 @@ def list_followed_businesses():
         Follow.follower_id == current_user_id,
         Follow.business_id.isnot(None),
     ).all()
+    now = datetime.utcnow()
     out = []
     for f in follows:
         b = f.business
         if not b:
             continue
+        # Following a business = following all its FUTURE events. Return each
+        # business's upcoming events (sorted soonest-first) so the client can
+        # show them under the business.
+        upcoming = []
+        for ev in Event.query.filter(Event.business_id == b.id).all():
+            dt = _event_datetime(ev)
+            if dt is None or dt < now:
+                continue
+            upcoming.append((dt, ev))
+        upcoming.sort(key=lambda x: x[0])
+        upcoming_events = [{
+            "id": ev.id, "title": ev.title, "date": ev.date, "time": ev.time,
+            "location": ev.location, "image": ev.image,
+            "participants_count": len(ev.participants),
+        } for (_, ev) in upcoming]
         out.append({
             "id":                  b.id,
             "name":                b.name,
@@ -3630,6 +3657,7 @@ def list_followed_businesses():
             "longitude":           b.longitude,
             "profile_picture_url": b.profile_picture_url,
             "hours":               b.hours or {},
+            "upcoming_events":     upcoming_events,
         })
     return jsonify(out), 200
 
@@ -4340,3 +4368,218 @@ def cancel_event_deletion(event_id):
     event.pending_delete_at = None
     db.session.commit()
     return jsonify({"msg": "Deletion request cancelled."}), 200
+
+
+# =========================================================
+# EXP / GAMIFICATION — grant engine + endpoints
+# =========================================================
+EXP_CONFIRM_WINDOW_DAYS = 7
+EXP_DEFAULT_DURATION_MIN = 180
+
+
+def _round_half_up(x):
+    return int(x + 0.5)
+
+
+def _create_exp_total(n_extra):
+    return (10 + 2 * n_extra) * (1 + 0.20 * (n_extra // 5))
+
+
+def _mutual_friends_in(user_id, candidate_ids):
+    if not candidate_ids:
+        return set()
+    rows = Friendship.query.filter(
+        Friendship.status == "accepted",
+        or_(
+            (Friendship.requester_id == user_id) & Friendship.addressee_id.in_(candidate_ids),
+            (Friendship.addressee_id == user_id) & Friendship.requester_id.in_(candidate_ids),
+        ),
+    ).all()
+    out = set()
+    for f in rows:
+        out.add(f.addressee_id if f.requester_id == user_id else f.requester_id)
+    return out
+
+
+def _confirmed_attendees(event_id, exclude_user=None):
+    q = "SELECT user_id FROM event_participants WHERE event_id = :e AND confirmed_at IS NOT NULL"
+    p = {"e": event_id}
+    if exclude_user is not None:
+        q += " AND user_id <> :u"
+        p["u"] = exclude_user
+    return {r[0] for r in db.session.execute(text(q), p).fetchall()}
+
+
+def _grant_attendance_exp(event, user_id):
+    biz_id = event.business_id
+    creator_id = event.creator_id
+    prior_ids = _confirmed_attendees(event.id, exclude_user=user_id)
+    had_prior = len(prior_ids) > 0
+    db.session.add(ExpLedger(user_id=user_id, amount=5, reason="attend", event_id=event.id, business_id=biz_id))
+    for f in _mutual_friends_in(user_id, prior_ids):
+        db.session.add(ExpLedger(user_id=user_id, amount=1, reason="attend_friend", event_id=event.id, peer_user_id=f))
+        db.session.add(ExpLedger(user_id=f, amount=1, reason="attend_friend", event_id=event.id, peer_user_id=user_id))
+    n_before = len(prior_ids - {creator_id})
+    n_after = len((prior_ids | {user_id}) - {creator_id})
+    prev_total = _round_half_up(_create_exp_total(n_before)) if had_prior else 0
+    new_total = _round_half_up(_create_exp_total(n_after))
+    delta = new_total - prev_total
+    if delta:
+        db.session.add(ExpLedger(user_id=creator_id, amount=delta, reason="create", event_id=event.id, business_id=biz_id))
+
+
+def _best_venue_for_event(event):
+    if not event.location:
+        return None
+    loc = event.location.strip().lower()
+    cands = [b for b in Business.query.all() if (b.location or "").strip().lower() == loc]
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]
+    if event.latitude is not None and event.longitude is not None:
+        def dist(b):
+            if b.latitude is None or b.longitude is None:
+                return float("inf")
+            return (b.latitude - event.latitude) ** 2 + (b.longitude - event.longitude) ** 2
+        cands.sort(key=lambda b: (dist(b), b.id))
+    else:
+        cands.sort(key=lambda b: b.id)
+    return cands[0]
+
+
+def _grant_venue_exp(event):
+    if event.business_id is not None:
+        return
+    if ExpLedger.query.filter_by(event_id=event.id, reason="venue").first():
+        return
+    biz = _best_venue_for_event(event)
+    if not biz:
+        return
+    db.session.add(ExpLedger(user_id=biz.owner_id, amount=5, reason="venue", event_id=event.id, owner_business_id=biz.id))
+
+
+def _exp_total(user_id):
+    return int(db.session.execute(
+        text("SELECT COALESCE(SUM(amount),0) FROM exp_ledger WHERE user_id = :u"), {"u": user_id}).scalar() or 0)
+
+
+def _exp_pair_with_friend(viewer_id, peer_id):
+    return int(db.session.execute(
+        text("SELECT COALESCE(SUM(amount),0) FROM exp_ledger WHERE user_id = :u AND peer_user_id = :p"),
+        {"u": viewer_id, "p": peer_id}).scalar() or 0)
+
+
+def _exp_pair_with_business(viewer_id, business_id):
+    return int(db.session.execute(
+        text("SELECT COALESCE(SUM(amount),0) FROM exp_ledger WHERE user_id = :u AND business_id = :b"),
+        {"u": viewer_id, "b": business_id}).scalar() or 0)
+
+
+def _business_own_exp(business_id):
+    return int(db.session.execute(
+        text("SELECT COALESCE(SUM(amount),0) FROM exp_ledger WHERE owner_business_id = :b"),
+        {"b": business_id}).scalar() or 0)
+
+
+def _event_end_dt(event):
+    start = _event_datetime(event)
+    if start is None:
+        return None
+    dur = event.duration_min if getattr(event, "duration_min", None) else EXP_DEFAULT_DURATION_MIN
+    return start + timedelta(minutes=dur)
+
+
+def _event_confirmable(event, now=None):
+    now = now or datetime.utcnow()
+    start = _event_datetime(event)
+    if start is None or start > now:
+        return False
+    end = _event_end_dt(event) or start
+    return now <= end + timedelta(days=EXP_CONFIRM_WINDOW_DAYS)
+
+
+def _pending_exp(user_id, now=None):
+    now = now or datetime.utcnow()
+    rows = db.session.execute(
+        text("SELECT event_id FROM event_participants WHERE user_id = :u AND rsvp = 'going' AND confirmed_at IS NULL"),
+        {"u": user_id}).fetchall()
+    pending = 0
+    for (eid,) in rows:
+        ev = db.session.get(Event, eid)
+        if not ev or not _event_confirmable(ev, now):
+            continue
+        pending += 5 + (10 if ev.creator_id == user_id else 0)
+    return pending
+
+
+@api.route('/events/<int:event_id>/attended', methods=['POST'])
+@jwt_required()
+def confirm_attendance(event_id):
+    uid = int(get_jwt_identity())
+    event = db.session.get(Event, event_id)
+    if not event:
+        return jsonify({"msg": "Event not found"}), 404
+    row = db.session.execute(
+        text("SELECT rsvp, confirmed_at FROM event_participants WHERE event_id = :e AND user_id = :u"),
+        {"e": event_id, "u": uid}).fetchone()
+    if not row or row[0] != 'going':
+        return jsonify({"msg": "You can only confirm events you were going to"}), 403
+    if row[1] is not None:
+        return jsonify({"msg": "Attendance already confirmed", **exp_level_info(_exp_total(uid))}), 200
+    if not _event_confirmable(event):
+        return jsonify({"msg": "This event isn't ready to confirm yet"}), 400
+    db.session.execute(
+        text("UPDATE event_participants SET confirmed_at = :t WHERE event_id = :e AND user_id = :u"),
+        {"t": datetime.utcnow(), "e": event_id, "u": uid})
+    _grant_attendance_exp(event, uid)
+    _grant_venue_exp(event)
+    db.session.commit()
+    return jsonify({"msg": "Attendance confirmed", **exp_level_info(_exp_total(uid))}), 200
+
+
+@api.route('/exp/me', methods=['GET'])
+@jwt_required()
+def my_exp():
+    uid = int(get_jwt_identity())
+    total = _exp_total(uid)
+    info = exp_level_info(total)
+    friend_rows = db.session.execute(
+        text("SELECT peer_user_id, COALESCE(SUM(amount),0) AS e FROM exp_ledger "
+             "WHERE user_id = :u AND peer_user_id IS NOT NULL GROUP BY peer_user_id ORDER BY e DESC LIMIT 10"),
+        {"u": uid}).fetchall()
+    top_friends = []
+    for pid, e in friend_rows:
+        peer = db.session.get(User, pid)
+        top_friends.append({"user_id": pid, "username": peer.username if peer else None,
+                            "profile_picture_url": peer.profile_picture_url if peer else None, "exp": int(e)})
+    biz_rows = db.session.execute(
+        text("SELECT business_id, COALESCE(SUM(amount),0) AS e FROM exp_ledger "
+             "WHERE user_id = :u AND business_id IS NOT NULL GROUP BY business_id ORDER BY e DESC LIMIT 10"),
+        {"u": uid}).fetchall()
+    top_businesses = []
+    for bid, e in biz_rows:
+        b = db.session.get(Business, bid)
+        top_businesses.append({"business_id": bid, "name": b.name if b else None,
+                               "profile_picture_url": b.profile_picture_url if b else None, "exp": int(e)})
+    return jsonify({**info, "pending": _pending_exp(uid),
+                    "top_friends": top_friends, "top_businesses": top_businesses}), 200
+
+
+@api.route('/events/attendable', methods=['GET'])
+@jwt_required()
+def attendable_events():
+    uid = int(get_jwt_identity())
+    rows = db.session.execute(
+        text("SELECT event_id FROM event_participants WHERE user_id = :u AND rsvp = 'going' AND confirmed_at IS NULL"),
+        {"u": uid}).fetchall()
+    now = datetime.utcnow()
+    out = []
+    for (eid,) in rows:
+        ev = db.session.get(Event, eid)
+        if not ev or not _event_confirmable(ev, now):
+            continue
+        out.append({"id": ev.id, "title": ev.title, "date": ev.date, "time": ev.time,
+                    "location": ev.location, "image": ev.image,
+                    "estimated_exp": 5 + (10 if ev.creator_id == uid else 0)})
+    return jsonify(out), 200

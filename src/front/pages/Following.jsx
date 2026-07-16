@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Container, Row, Col, Card, Spinner, Alert } from "react-bootstrap";
-import { FiHeart, FiBriefcase, FiMapPin } from "react-icons/fi";
+import { FiHeart, FiBriefcase, FiMapPin, FiCalendar } from "react-icons/fi";
 
 // =============================================================
 // Following — Phase 5b, route /following
@@ -92,22 +92,65 @@ export const Following = () => {
         ) : (
           <Row className="g-3" role="list" aria-label="Businesses you follow">
             {businesses.map((b) => (
-              <Col xs={6} md={4} lg={3} key={b.id} role="listitem">
-                <Card className="follow-card h-100" onClick={() => navigate(`/business/${b.id}`)}>
-                  {b.profile_picture_url ? (
-                    <img className="follow-card-img" src={b.profile_picture_url} alt={b.name} />
-                  ) : (
-                    <div className="follow-card-noimg"><FiBriefcase size={32} /></div>
-                  )}
+              <Col xs={12} lg={6} key={b.id} role="listitem">
+                <Card className="follow-card h-100">
                   <Card.Body>
-                    <div className="text-light fw-semibold text-truncate">{b.name}</div>
-                    {b.category && (
-                      <div className="small text-secondary text-truncate">{b.category}</div>
-                    )}
-                    {b.location && (
-                      <div className="small text-secondary text-truncate mt-1">
-                        <FiMapPin size={12} className="me-1" />{b.location}
+                    <div
+                      className="d-flex align-items-center gap-3 mb-3"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => navigate(`/business/${b.id}`)}
+                    >
+                      {b.profile_picture_url ? (
+                        <img
+                          src={b.profile_picture_url}
+                          alt={b.name}
+                          style={{ width: 48, height: 48, borderRadius: 12, objectFit: "cover", flexShrink: 0 }}
+                        />
+                      ) : (
+                        <div style={{ width: 48, height: 48, borderRadius: 12, background: "#161922", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <FiBriefcase size={22} />
+                        </div>
+                      )}
+                      <div style={{ minWidth: 0 }}>
+                        <div className="text-light fw-semibold text-truncate">{b.name}</div>
+                        {b.category && (
+                          <div className="small text-secondary text-truncate">{b.category}</div>
+                        )}
+                        {b.location && (
+                          <div className="small text-secondary text-truncate">
+                            <FiMapPin size={12} className="me-1" />{b.location}
+                          </div>
+                        )}
                       </div>
+                    </div>
+
+                    <div style={{ fontSize: "0.72rem", letterSpacing: "0.08em", textTransform: "uppercase", color: "#9aa0b4", fontWeight: 600, marginBottom: 8 }}>
+                      Upcoming events
+                    </div>
+                    {b.upcoming_events && b.upcoming_events.length > 0 ? (
+                      <div className="d-flex flex-column gap-2">
+                        {b.upcoming_events.map((ev) => (
+                          <div
+                            key={ev.id}
+                            className="d-flex align-items-center justify-content-between p-2"
+                            style={{ background: "#0b0d12", border: "1px solid #262a36", borderRadius: 10, cursor: "pointer" }}
+                            onClick={() => navigate(`/map?event=${ev.id}`)}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <div className="text-light text-truncate" style={{ fontWeight: 600 }}>{ev.title || "Event"}</div>
+                              <div className="small text-secondary text-truncate">
+                                <FiCalendar size={12} className="me-1" />
+                                {ev.date}{ev.time ? ` · ${ev.time}` : ""}{ev.location ? ` · ${ev.location}` : ""}
+                              </div>
+                            </div>
+                            {ev.participants_count > 0 && (
+                              <span className="small text-secondary ms-2" style={{ whiteSpace: "nowrap" }}>{ev.participants_count} going</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="small text-secondary fst-italic">No upcoming events right now.</div>
                     )}
                   </Card.Body>
                 </Card>

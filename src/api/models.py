@@ -23,6 +23,9 @@ event_participants = Table(
     Column("event_id", ForeignKey("event.id"), primary_key=True),
     Column("user_id",  ForeignKey("user.id"),  primary_key=True),
     Column("rsvp",     String(20), nullable=True, default=None),
+    # EXP — timestamp the attendee tapped "I went". NULL = not confirmed.
+    # Connection points are only ever granted off this signal, never off rsvp.
+    Column("confirmed_at", DateTime, nullable=True, default=None),
 )
 
 # #1 — workers assigned to a business event (distinct from participants).
@@ -1134,3 +1137,54 @@ class TeamInvite(db.Model):
         if include_token:
             d["token"] = self.token
         return d
+
+
+# ── EXP / GAMIFICATION ("connection points") ─────────────
+# One append-only row per EXP gain, tagged with WHY and WITH WHOM, so three
+# meters all derive from the same ledger. owner_business_id marks a BUSINESS's
+# own EXP (venue +5 rows), credited to the owner so it rolls up one-way.
+class ExpLedger(db.Model):
+    __tablename__ = "exp_ledger"
+    id:                Mapped[int]      = mapped_column(primary_key=True)
+    user_id:           Mapped[int]      = mapped_column(ForeignKey("user.id"), nullable=False, index=True)
+    amount:            Mapped[int]      = mapped_column(Integer, nullable=False)
+    reason:            Mapped[str]      = mapped_column(String(30), nullable=False)
+    event_id:          Mapped[int]      = mapped_column(ForeignKey("event.id"), nullable=True, index=True)
+    peer_user_id:      Mapped[int]      = mapped_column(ForeignKey("user.id"), nullable=True, index=True)
+    business_id:       Mapped[int]      = mapped_column(ForeignKey("business.id"), nullable=True, index=True)
+    owner_business_id: Mapped[int]      = mapped_column(ForeignKey("business.id"), nullable=True, index=True)
+    created_at:        Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    def serialize(self):
+        return {
+            "id": self.id, "user_id": self.user_id, "amount": self.amount,
+            "reason": self.reason, "event_id": self.event_id,
+            "peer_user_id": self.peer_user_id, "business_id": self.business_id,
+            "owner_business_id": self.owner_business_id,
+            "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+import math as _math
+
+EXP_LEVEL_BASE = 40
+EXP_LEVEL_GROWTH = 1.25
+
+
+def exp_threshold(level):
+    t = EXP_LEVEL_BASE
+    for _ in range(level - 1):
+        t = _math.ceil(t * EXP_LEVEL_GROWTH)
+    return t
+
+
+def exp_level_info(total):
+    total = max(0, int(total or 0))
+    level = 1
+    remaining = total
+    needed = exp_threshold(1)
+    while remaining >= needed:
+        remaining -= needed
+        level += 1
+        needed = exp_threshold(level)
+    return {"level": level, "progress_in_level": remaining, "level_needs": needed, "total_exp": total}
